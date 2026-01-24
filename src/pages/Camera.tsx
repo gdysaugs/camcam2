@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isAuthConfigured, supabase } from '../lib/supabaseClient'
 import { TopNav } from '../components/TopNav'
+import { GuestIntro } from '../components/GuestIntro'
 import './camera.css'
 
 type RenderResult = {
@@ -141,6 +142,43 @@ const extractImageList = (payload: any) => {
 }
 
 const extractJobId = (payload: any) => payload?.id || payload?.jobId || payload?.job_id || payload?.output?.id
+
+const sanitizeFilename = (value: string) => value.replace(/[\\/:*?"<>|]+/g, '_').trim()
+
+const normalizeImageExtension = (value: string) => {
+  const ext = value.toLowerCase()
+  if (ext === 'jpeg') return 'jpg'
+  return ext
+}
+
+const inferImageExtension = (value: string, contentType?: string | null) => {
+  const type = contentType?.split(';')[0]?.trim().toLowerCase()
+  if (type && type.startsWith('image/')) {
+    return normalizeImageExtension(type.replace('image/', ''))
+  }
+  if (value.startsWith('data:')) {
+    const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);/)
+    if (match) {
+      return normalizeImageExtension(match[1].replace('image/', ''))
+    }
+  }
+  const urlMatch = value.match(/\.([a-zA-Z0-9]+)(?:[?#]|$)/)
+  if (urlMatch) {
+    return normalizeImageExtension(urlMatch[1])
+  }
+  return 'png'
+}
+
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
 
 export function Camera() {
   const [sourcePreview, setSourcePreview] = useState<string | null>(null)
@@ -546,6 +584,37 @@ export function Camera() {
     await startBatch(primaryPayload, secondaryPayload, primaryName, secondaryName)
   }
 
+  const handleSaveImage = useCallback(async () => {
+    if (!displayImage) return
+    const baseLabel = sanitizeFilename(sourceName || sourceNameSub || 'qwen-edit') || 'qwen-edit'
+    const isRemote = displayImage.startsWith('http')
+    const downloadUrl = isRemote ? `/api/download?url=${encodeURIComponent(displayImage)}` : displayImage
+    try {
+      const headers: Record<string, string> = {}
+      if (isRemote && accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`
+      }
+      const response = await fetch(downloadUrl, { cache: 'force-cache', headers })
+      if (!response.ok) {
+        throw new Error('Failed to download image.')
+      }
+      const blob = await response.blob()
+      const extension = inferImageExtension(displayImage, response.headers.get('content-type') || blob.type)
+      downloadBlob(blob, `${baseLabel}.${extension}`)
+    } catch {
+      window.open(displayImage, '_blank', 'noopener')
+    }
+  }, [accessToken, displayImage, sourceName, sourceNameSub])
+
+  if (!session) {
+    return (
+      <div className="camera-app">
+        <TopNav />
+        <GuestIntro mode="image" onSignIn={handleGoogleSignIn} />
+      </div>
+    )
+  }
+
   return (
     <div className="camera-app">
       <TopNav />
@@ -705,6 +774,13 @@ export function Camera() {
               <h2>プレビュー</h2>
               <p>最新の出力をここに表示します。</p>
             </div>
+            {displayImage && (
+              <div className="stage-actions">
+                <button type="button" className="ghost-button" onClick={handleSaveImage}>
+                  保存
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="stage-viewer" style={viewerStyle}>

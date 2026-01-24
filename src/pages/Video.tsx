@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isAuthConfigured, supabase } from '../lib/supabaseClient'
 import { TopNav } from '../components/TopNav'
+import { GuestIntro } from '../components/GuestIntro'
 import './camera.css'
 
 type RenderResult = {
@@ -359,7 +360,7 @@ export function Video() {
       const runId = runIdRef.current + 1
       runIdRef.current = runId
       setIsRunning(true)
-      setStatusMessage('生成中… 約数分で完了予定')
+      setStatusMessage('生成中… 約1分で完了予定')
       setResults([{ id: makeId(), status: 'queued' as const }])
 
       try {
@@ -521,6 +522,15 @@ export function Video() {
     }
   }, [displayVideo, isGif, sourceName])
 
+  if (!session) {
+    return (
+      <div className="camera-app">
+        <TopNav />
+        <GuestIntro mode="video" onSignIn={handleGoogleSignIn} />
+      </div>
+    )
+  }
+
   return (
     <div className="camera-app">
       <TopNav />
@@ -646,7 +656,7 @@ export function Video() {
                   <span className="loading-spinner" aria-hidden="true" />
                   <div>
                     <strong>生成中</strong>
-                    <p>数分かかる可能性があります</p>
+                    <p>約1分で完了予定</p>
                   </div>
                 </div>
               </div>
