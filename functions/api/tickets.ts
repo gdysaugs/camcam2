@@ -32,6 +32,36 @@ const getSupabaseAdmin = (env: Env) => {
   })
 }
 
+const fetchTicketRow = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+) => {
+  const email = user.email
+  const { data: byUser, error: userError } = await admin
+    .from('user_tickets')
+    .select('tickets')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  if (userError) {
+    return { error: userError }
+  }
+  if (byUser) {
+    return { data: byUser, error: null }
+  }
+  if (!email) {
+    return { data: null, error: null }
+  }
+  const { data: byEmail, error: emailError } = await admin
+    .from('user_tickets')
+    .select('tickets')
+    .eq('email', email)
+    .maybeSingle()
+  if (emailError) {
+    return { error: emailError }
+  }
+  return { data: byEmail, error: null }
+}
+
 const isGoogleUser = (user: User) => {
   if (user.app_metadata?.provider === 'google') return true
   if (Array.isArray(user.identities)) {
@@ -72,11 +102,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ error: 'メールアドレスが取得できません。' }, 400)
   }
 
-  const { data, error } = await auth.admin
-    .from('user_tickets')
-    .select('tickets')
-    .or(`user_id.eq.${auth.user.id},email.eq.${email}`)
-    .maybeSingle()
+  const { data, error } = await fetchTicketRow(auth.admin, auth.user)
 
   if (error) {
     return jsonResponse({ error: error.message }, 500)

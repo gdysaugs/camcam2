@@ -16,17 +16,16 @@ import './camera.css'
 type RenderResult = {
   id: string
   status: 'queued' | 'running' | 'done' | 'error'
-  video?: string
+  image?: string
+  seed?: number
   error?: string
 }
 
 const MAX_PARALLEL = 1
-const API_ENDPOINT = '/api/wan'
-const FIXED_FPS = 10
-const FIXED_SECONDS = 5
+const API_ENDPOINT = '/api/qwen'
 const FIXED_STEPS = 4
-const FIXED_CFG = 1
-const FIXED_FRAME_COUNT = FIXED_FPS * FIXED_SECONDS
+const FIXED_WIDTH = 1024
+const FIXED_HEIGHT = 1024
 const OAUTH_REDIRECT_URL =
   import.meta.env.VITE_SUPABASE_REDIRECT_URL ?? (typeof window !== 'undefined' ? window.location.origin : undefined)
 
@@ -52,108 +51,110 @@ const makeId = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+type DirectionPreset = {
+  id: string
+  label: string
+  prompt: string
+}
+
+type ElevationPreset = {
+  id: string
+  label: string
+  prompt: string
+}
+
+type PurchasePlan = {
+  id: string
+  label: string
+  price: number
+  tickets: number
+  priceId: string
+}
+
+const DIRECTION_PRESETS: DirectionPreset[] = [
+  { id: 'front', label: '正面', prompt: 'front view' },
+  { id: 'front-right', label: '右前', prompt: 'front-right quarter view' },
+  { id: 'right', label: '右', prompt: 'right side view' },
+  { id: 'back-right', label: '右後', prompt: 'back-right quarter view' },
+  { id: 'back', label: '後ろ', prompt: 'back view' },
+  { id: 'back-left', label: '左後', prompt: 'back-left quarter view' },
+  { id: 'left', label: '左', prompt: 'left side view' },
+  { id: 'front-left', label: '左前', prompt: 'front-left quarter view' },
+]
+
+const ELEVATION_PRESETS: ElevationPreset[] = [
+  { id: 'level', label: '水平 0°', prompt: 'eye-level shot' },
+  { id: 'up45', label: '上 45°', prompt: 'high-angle shot' },
+  { id: 'up90', label: '上 90°', prompt: 'top-down view' },
+  { id: 'down45', label: '下 45°', prompt: 'low-angle shot' },
+  { id: 'down90', label: '下 90°', prompt: 'extreme low-angle shot' },
+]
+
+const PURCHASE_PLANS: PurchasePlan[] = [
+  { id: 'light', label: 'ライト', price: 700, tickets: 30, priceId: 'price_1SsyiKPLWVPQ812Zo2YZLXXO' },
+  { id: 'standard', label: 'スタンダード', price: 1500, tickets: 80, priceId: 'price_1SsyjEPLWVPQ812Zw9JvJoto' },
+  { id: 'pro', label: 'プロ', price: 3200, tickets: 200, priceId: 'price_1SsyjVPLWVPQ812ZGPbtaFFw' },
+]
+
+const buildEditPrompt = (value: string, directionPrompt?: string, elevationPrompt?: string) => {
+  const trimmed = value.trim()
+  const angleParts = [directionPrompt, elevationPrompt, 'medium shot'].filter(Boolean).join(', ')
+  const angleText = angleParts ? `<sks> ${angleParts}` : ''
+  return [trimmed, angleText].filter(Boolean).join(', ')
+}
+
 const toBase64 = (dataUrl: string) => {
   const parts = dataUrl.split(',')
   return parts.length > 1 ? parts[1] : dataUrl
 }
 
-const normalizeVideo = (value: unknown, filename?: string) => {
+const normalizeImage = (value: unknown) => {
   if (typeof value !== 'string' || !value) return null
   if (value.startsWith('data:') || value.startsWith('http')) return value
-  const ext = filename?.split('.').pop()?.toLowerCase()
-  const mime =
-    ext === 'webm' ? 'video/webm' : ext === 'gif' ? 'image/gif' : ext === 'mp4' ? 'video/mp4' : 'video/mp4'
-  return `data:${mime};base64,${value}`
+  return `data:image/png;base64,${value}`
 }
 
-const alignTo16 = (value: number) => Math.max(16, Math.round(value / 16) * 16)
-const PORTRAIT_MAX = { width: 576, height: 832 }
-const LANDSCAPE_MAX = { width: 832, height: 576 }
-
-const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHeight: number) => {
-  const scale = Math.min(1, maxWidth / width, maxHeight / height)
-  const scaledWidth = width * scale
-  const scaledHeight = height * scale
-  const aspect = width / height
-
-  if (aspect >= 1) {
-    const targetWidth = Math.min(maxWidth, alignTo16(scaledWidth))
-    const targetHeight = Math.min(maxHeight, alignTo16(targetWidth / aspect))
-    return { width: targetWidth, height: targetHeight }
-  }
-  const targetHeight = Math.min(maxHeight, alignTo16(scaledHeight))
-  const targetWidth = Math.min(maxWidth, alignTo16(targetHeight * aspect))
-  return { width: targetWidth, height: targetHeight }
-}
-
-const getTargetSize = (width: number, height: number) => {
-  const isPortrait = height >= width
-  const bounds = isPortrait ? PORTRAIT_MAX : LANDSCAPE_MAX
-  return fitWithinBounds(width, height, bounds.width, bounds.height)
-}
-
-const buildPaddedDataUrl = (img: HTMLImageElement, targetWidth: number, targetHeight: number) => {
-  const canvas = document.createElement('canvas')
-  canvas.width = targetWidth
-  canvas.height = targetHeight
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.drawImage(img, 0, 0, targetWidth, targetHeight)
-  return canvas.toDataURL('image/png')
-}
-
-const isVideoLike = (value: unknown, filename?: string) => {
-  const ext = filename?.split('.').pop()?.toLowerCase()
-  if (ext && ['mp4', 'webm', 'gif'].includes(ext)) return true
-  if (typeof value !== 'string') return false
-  if (value.startsWith('data:video/') || value.startsWith('data:image/gif')) return true
-  return false
-}
-
-const extractVideoList = (payload: any) => {
+const extractImageList = (payload: any) => {
   const output = payload?.output ?? payload?.result ?? payload
-  const nested = output?.output ?? output?.result ?? output?.data ?? payload?.output?.output ?? payload?.result?.output
-  const listCandidates = [
-    output?.videos,
-    output?.outputs,
-    output?.output_videos,
-    output?.gifs,
-    output?.images,
-    payload?.videos,
-    payload?.gifs,
-    payload?.images,
-    nested?.videos,
-    nested?.outputs,
-    nested?.output_videos,
-    nested?.gifs,
-    nested?.images,
-    nested?.data,
-  ]
+  const listCandidates = [output?.images, output?.outputs, output?.output_images, output?.data, payload?.images]
   for (const candidate of listCandidates) {
     if (!Array.isArray(candidate)) continue
     const normalized = candidate
-      .map((item: any) => {
-        const raw = item?.video ?? item?.data ?? item?.url ?? item
-        const name = item?.filename
-        if (!isVideoLike(raw, name)) return null
-        return normalizeVideo(raw, name)
-      })
+      .map((item: any) => normalizeImage(item?.image ?? item?.url ?? item?.data ?? item))
       .filter(Boolean) as string[]
     if (normalized.length) return normalized
+  }
+  const singleCandidates = [
+    output?.image,
+    output?.output_image,
+    output?.output_image_base64,
+    output?.message,
+    output?.data,
+    payload?.image,
+    payload?.data,
+  ]
+  for (const candidate of singleCandidates) {
+    const normalized = normalizeImage(candidate)
+    if (normalized) return [normalized]
   }
   return []
 }
 
 const extractJobId = (payload: any) => payload?.id || payload?.jobId || payload?.job_id || payload?.output?.id
 
-export function Video() {
+export function Camera() {
   const [sourcePreview, setSourcePreview] = useState<string | null>(null)
   const [sourcePayload, setSourcePayload] = useState<string | null>(null)
   const [sourceName, setSourceName] = useState('')
+  const [sourcePreviewSub, setSourcePreviewSub] = useState<string | null>(null)
+  const [sourcePayloadSub, setSourcePayloadSub] = useState<string | null>(null)
+  const [sourceNameSub, setSourceNameSub] = useState('')
   const [prompt, setPrompt] = useState('')
   const [negativePrompt, setNegativePrompt] = useState('')
-  const [width, setWidth] = useState(832)
-  const [height, setHeight] = useState(576)
+  const [guidanceScale, setGuidanceScale] = useState(1.0)
+  const [useAngle, setUseAngle] = useState(false)
+  const [angleDirectionId, setAngleDirectionId] = useState(DIRECTION_PRESETS[0].id)
+  const [angleElevationId, setAngleElevationId] = useState(ELEVATION_PRESETS[0].id)
   const [results, setResults] = useState<RenderResult[]>([])
   const [statusMessage, setStatusMessage] = useState('画像をアップロードしてください。')
   const [isRunning, setIsRunning] = useState(false)
@@ -168,10 +169,11 @@ export function Video() {
   const navigate = useNavigate()
 
   const totalFrames = results.length || 1
-  const completedCount = useMemo(() => results.filter((item) => item.video).length, [results])
+  const completedCount = useMemo(() => results.filter((item) => item.image).length, [results])
   const progress = totalFrames ? completedCount / totalFrames : 0
-  const displayVideo = results[0]?.video ?? null
-  const emptyMessage = sourcePayload ? '生成ボタンを押してください。' : '画像をアップロードしてください。'
+  const displayImage = results[0]?.image ?? null
+  const hasAnySource = Boolean(sourcePayload || sourcePayloadSub)
+  const emptyMessage = hasAnySource ? '生成ボタンを押してください。' : '画像をアップロードしてください。'
   const accessToken = session?.access_token ?? ''
 
   useEffect(() => {
@@ -238,56 +240,63 @@ export function Video() {
   }, [accessToken, fetchTickets, session])
 
   useEffect(() => {
-    if (session && sourcePayload && statusMessage.includes('ログイン')) {
+    if (session && hasAnySource && statusMessage.includes('ログイン')) {
       setStatusMessage('生成準備OK')
     }
-  }, [session, sourcePayload, statusMessage])
+  }, [hasAnySource, session, statusMessage])
 
   useEffect(() => {
-    if (!session && sourcePayload && !isRunning) {
+    if (!session && hasAnySource && !isRunning) {
       setStatusMessage('Googleでログインしてください。')
     }
-  }, [isRunning, session, sourcePayload])
-
-  const viewerAspect = displayVideo ? `${width} / ${height}` : '1 / 1'
+  }, [hasAnySource, isRunning, session])
 
   const viewerStyle = useMemo(
     () =>
       ({
         '--progress': progress,
-        '--viewer-aspect': viewerAspect,
       }) as CSSProperties,
-    [progress, viewerAspect],
+    [progress],
   )
 
-  const applyVideoAt = useCallback((index: number, video: string) => {
+  const applyImageAt = useCallback((index: number, image: string) => {
     setResults((prev) =>
       prev.map((item, itemIndex) => ({
         ...item,
         status: itemIndex === index ? 'done' : item.status,
-        video: itemIndex === index ? video : item.video,
+        image: itemIndex === index ? image : item.image,
       })),
     )
   }, [])
 
-  const submitVideo = useCallback(
-    async (payload: string, token: string) => {
+  const submitEdit = useCallback(
+    async (
+      editPrompt: string,
+      payload: string,
+      subPayload: string | null,
+      payloadName: string,
+      subName: string | null,
+      token: string,
+      angleStrength: number,
+    ) => {
       if (!payload) throw new Error('画像がありません。')
       const input: Record<string, unknown> = {
         image_base64: payload,
-        prompt,
+        image_name: payloadName || 'input.png',
+        prompt: editPrompt,
         negative_prompt: negativePrompt,
-        width,
-        height,
-        noise_aug_strength: 0.1,
-        fps: FIXED_FPS,
-        seconds: FIXED_SECONDS,
-        num_frames: FIXED_FRAME_COUNT,
-        steps: FIXED_STEPS,
-        cfg: FIXED_CFG,
+        guidance_scale: guidanceScale,
+        num_inference_steps: FIXED_STEPS,
+        width: FIXED_WIDTH,
+        height: FIXED_HEIGHT,
         seed: 0,
         randomize_seed: true,
         worker_mode: 'comfyui',
+        angle_strength: angleStrength,
+      }
+      if (subPayload) {
+        input.sub_image_base64 = subPayload
+        input.sub_image_name = subName || 'sub.png'
       }
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) {
@@ -303,24 +312,20 @@ export function Video() {
         const message = data?.error || data?.message || '生成に失敗しました。'
         throw new Error(message)
       }
-      const nextTickets = Number(data?.ticketsLeft ?? data?.tickets_left)
-      if (Number.isFinite(nextTickets)) {
-        setTicketCount(nextTickets)
-      }
-      const videos = extractVideoList(data)
-      if (videos.length) {
-        return { videos }
+      const images = extractImageList(data)
+      if (images.length) {
+        return { images }
       }
       const jobId = extractJobId(data)
       if (!jobId) throw new Error('ジョブIDが取得できませんでした。')
       return { jobId }
     },
-    [height, negativePrompt, prompt, width],
+    [guidanceScale, negativePrompt],
   )
 
   const pollJob = useCallback(async (jobId: string, runId: number, token?: string) => {
-    for (let i = 0; i < 180; i += 1) {
-      if (runIdRef.current !== runId) return { status: 'cancelled' as const, videos: [] }
+    for (let i = 0; i < 120; i += 1) {
+      if (runIdRef.current !== runId) return { status: 'cancelled' as const, images: [] }
       const headers: Record<string, string> = {}
       if (token) {
         headers.Authorization = `Bearer ${token}`
@@ -331,25 +336,21 @@ export function Video() {
         const message = data?.error || data?.message || 'ステータス取得に失敗しました。'
         throw new Error(message)
       }
-      const nextTickets = Number(data?.ticketsLeft ?? data?.tickets_left)
-      if (Number.isFinite(nextTickets)) {
-        setTicketCount(nextTickets)
-      }
       const status = String(data?.status || data?.state || '').toLowerCase()
       if (status.includes('fail')) {
         throw new Error(data?.error || '生成に失敗しました。')
       }
-      const videos = extractVideoList(data)
-      if (videos.length) {
-        return { status: 'done' as const, videos }
+      const images = extractImageList(data)
+      if (images.length) {
+        return { status: 'done' as const, images }
       }
-      await wait(2000 + i * 50)
+      await wait(1500 + i * 40)
     }
     throw new Error('生成がタイムアウトしました。')
   }, [])
 
   const startBatch = useCallback(
-    async (payload: string) => {
+    async (payload: string, subPayload: string | null, payloadName: string, subName: string | null) => {
       if (!payload) return
       if (!session) {
         setStatusMessage('Googleでログインしてください。')
@@ -358,7 +359,7 @@ export function Video() {
       const runId = runIdRef.current + 1
       runIdRef.current = runId
       setIsRunning(true)
-      setStatusMessage('生成中… 約数分で完了予定')
+      setStatusMessage('生成中… 約1分で完了予定')
       setResults([{ id: makeId(), status: 'queued' as const }])
 
       try {
@@ -369,18 +370,34 @@ export function Video() {
               itemIndex === 0 ? { ...item, status: 'running' as const, error: undefined } : item,
             ),
           )
+          const directionPrompt = useAngle
+            ? DIRECTION_PRESETS.find((preset) => preset.id === angleDirectionId)?.prompt
+            : undefined
+          const elevationPrompt = useAngle
+            ? ELEVATION_PRESETS.find((preset) => preset.id === angleElevationId)?.prompt
+            : undefined
+          const editPrompt = buildEditPrompt(prompt, directionPrompt, elevationPrompt)
           try {
-            const submitted = await submitVideo(payload, accessToken)
+            const angleStrength = useAngle ? 1 : 0
+            const submitted = await submitEdit(
+              editPrompt,
+              payload,
+              subPayload,
+              payloadName,
+              subName,
+              accessToken,
+              angleStrength,
+            )
             if (runIdRef.current !== runId) return
-            if ('videos' in submitted && submitted.videos.length) {
-              applyVideoAt(0, submitted.videos[0])
+            if ('images' in submitted && submitted.images.length) {
+              applyImageAt(0, submitted.images[0])
               return
             }
             if ('jobId' in submitted) {
               const polled = await pollJob(submitted.jobId, runId, accessToken)
               if (runIdRef.current !== runId) return
-              if (polled.status === 'done' && polled.videos.length) {
-                applyVideoAt(0, polled.videos[0])
+              if (polled.status === 'done' && polled.images.length) {
+                applyImageAt(0, polled.images[0])
               }
             }
           } catch (error) {
@@ -412,7 +429,18 @@ export function Video() {
         }
       }
     },
-    [accessToken, applyVideoAt, fetchTickets, pollJob, session, submitVideo],
+    [
+      accessToken,
+      angleDirectionId,
+      angleElevationId,
+      applyImageAt,
+      fetchTickets,
+      pollJob,
+      prompt,
+      session,
+      submitEdit,
+      useAngle,
+    ],
   )
 
   const handleGoogleSignIn = async () => {
@@ -450,37 +478,56 @@ export function Video() {
     }
   }
 
-  const clearImage = useCallback(() => {
+  const clearMainImage = useCallback(() => {
     setSourcePreview(null)
     setSourcePayload(null)
     setSourceName('')
   }, [])
 
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const clearSubImage = useCallback(() => {
+    setSourcePreviewSub(null)
+    setSourcePayloadSub(null)
+    setSourceNameSub('')
+  }, [])
+
+  const handleMainFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
       const dataUrl = String(reader.result || '')
-      const img = new Image()
-      img.onload = () => {
-        const { width: targetWidth, height: targetHeight } = getTargetSize(img.naturalWidth, img.naturalHeight)
-        const paddedDataUrl = buildPaddedDataUrl(img, targetWidth, targetHeight) ?? dataUrl
-        const payload = toBase64(paddedDataUrl)
-        setWidth(targetWidth)
-        setHeight(targetHeight)
-        setSourcePreview(paddedDataUrl)
-        setSourcePayload(payload)
-        setSourceName(file.name)
-        setStatusMessage(session ? '生成準備OK' : 'Googleでログインしてください。')
-      }
-      img.src = dataUrl
+      const payload = toBase64(dataUrl)
+      setSourcePreview(dataUrl)
+      setSourcePayload(payload)
+      setSourceName(file.name)
+      setStatusMessage(session ? '生成準備OK' : 'Googleでログインしてください。')
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleSubFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '')
+      const payload = toBase64(dataUrl)
+      setSourcePreviewSub(dataUrl)
+      setSourcePayloadSub(payload)
+      setSourceNameSub(file.name)
+      setStatusMessage(session ? '生成準備OK' : 'Googleでログインしてください。')
     }
     reader.readAsDataURL(file)
   }
 
   const handleGenerate = async () => {
-    if (!sourcePayload || isRunning) return
+    const primaryPayload = sourcePayload ?? sourcePayloadSub
+    if (!primaryPayload || isRunning) {
+      if (!primaryPayload) {
+        setStatusMessage('画像をアップロードしてください。')
+      }
+      return
+    }
     if (!session) {
       setStatusMessage('Googleでログインしてください。')
       return
@@ -493,32 +540,11 @@ export function Video() {
       setShowTicketModal(true)
       return
     }
-    await startBatch(sourcePayload)
+    const primaryName = sourcePayload ? sourceName : sourceNameSub
+    const secondaryPayload = sourcePayload && sourcePayloadSub ? sourcePayloadSub : null
+    const secondaryName = sourcePayload && sourcePayloadSub ? sourceNameSub : null
+    await startBatch(primaryPayload, secondaryPayload, primaryName, secondaryName)
   }
-
-  const isGif = displayVideo?.startsWith('data:image/gif')
-  const canDownload = Boolean(displayVideo && !isGif)
-
-  const handleDownload = useCallback(async () => {
-    if (!displayVideo) return
-    const baseName = sourceName ? sourceName.replace(/\.[^.]+$/, '') : 'wan-video'
-    const ext = isGif ? 'gif' : 'mp4'
-    const filename = `${baseName}.${ext}`
-    try {
-      const response = await fetch(displayVideo)
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      URL.revokeObjectURL(url)
-    } catch {
-      window.open(displayVideo, '_blank', 'noopener')
-    }
-  }, [displayVideo, isGif, sourceName])
 
   return (
     <div className="camera-app">
@@ -526,12 +552,12 @@ export function Video() {
       <header className="camera-hero">
         <div>
           <p className="camera-hero__eyebrow">YAJU AI</p>
-          <h1>YAJU AI Video</h1>
-          <p className="camera-hero__lede">静止画から短い動画を生成します。</p>
+          <h1>YAJU AI</h1>
+          <p className="camera-hero__lede">画像をアップロードして、指示を書いて、生成を押すだけ。</p>
         </div>
         <div className="camera-hero__badge">
-          <span>高速AI生成</span>
-          <strong>どんな画像も動画に</strong>
+          <span>革命的AI</span>
+          <strong>画像を自由に編集</strong>
         </div>
       </header>
 
@@ -571,10 +597,10 @@ export function Video() {
             </div>
           )}
           <label className="upload-box">
-            <input type="file" accept="image/*" onChange={handleFileChange} />
+            <input type="file" accept="image/*" onChange={handleMainFileChange} />
             <div>
-              <strong>{sourceName || '画像をアップロード'}</strong>
-              <span>動画化したい元画像を選択してください。</span>
+              <strong>{sourceName || 'メイン画像をアップロード'}</strong>
+              <span>PNG/JPGに対応。アップロード後に生成できます。</span>
             </div>
           </label>
           {sourcePreview && (
@@ -582,12 +608,32 @@ export function Video() {
               <button
                 type="button"
                 className="preview-card__remove"
-                onClick={clearImage}
+                onClick={clearMainImage}
                 aria-label="Remove image"
               >
                 x
               </button>
-              <img src={sourcePreview} alt="入力プレビュー" />
+              <img src={sourcePreview} alt="メイン画像プレビュー" />
+            </div>
+          )}
+          <label className="upload-box">
+            <input type="file" accept="image/*" onChange={handleSubFileChange} />
+            <div>
+              <strong>{sourceNameSub || 'サブ画像（任意）をアップロード'}</strong>
+              <span>PNG/JPGに対応。アップロード後に生成できます。</span>
+            </div>
+          </label>
+          {sourcePreviewSub && (
+            <div className="preview-card">
+              <button
+                type="button"
+                className="preview-card__remove"
+                onClick={clearSubImage}
+                aria-label="Remove image"
+              >
+                x
+              </button>
+              <img src={sourcePreviewSub} alt="サブ画像プレビュー" />
             </div>
           )}
 
@@ -601,15 +647,55 @@ export function Video() {
               <span>ネガティブプロンプト</span>
               <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} />
             </label>
+            <label>
+              <span>プロンプト適用度（推奨1）</span>
+              <input
+                type="range"
+                min={1}
+                max={2}
+                step={0.1}
+                value={guidanceScale}
+                onChange={(e) => setGuidanceScale(Number(e.target.value))}
+              />
+              <em>{guidanceScale.toFixed(1)}</em>
+            </label>
+            <label className="toggle">
+              <span>アングル変更</span>
+              <input type="checkbox" checked={useAngle} onChange={(e) => setUseAngle(e.target.checked)} />
+            </label>
+            {useAngle && (
+              <>
+                <label>
+                  <span>方角（8方向）</span>
+                  <select value={angleDirectionId} onChange={(e) => setAngleDirectionId(e.target.value)}>
+                    {DIRECTION_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>上下角度</span>
+                  <select value={angleElevationId} onChange={(e) => setAngleElevationId(e.target.value)}>
+                    {ELEVATION_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
           </div>
 
           <button
             type="button"
-            className="primary-button"
-            onClick={handleGenerate}
-            disabled={!sourcePayload || isRunning || !session}
-          >
-            {isRunning ? '生成中…' : '動画生成'}
+          className="primary-button"
+          onClick={handleGenerate}
+          disabled={(!sourcePayload && !sourcePayloadSub) || isRunning || !session}
+        >
+            {isRunning ? '生成中…' : '生成'}
           </button>
         </section>
 
@@ -617,25 +703,14 @@ export function Video() {
           <div className="stage-header">
             <div>
               <h2>プレビュー</h2>
-              <p>生成された動画を表示します。</p>
+              <p>最新の出力をここに表示します。</p>
             </div>
-            {canDownload && (
-              <div className="stage-actions">
-                <button type="button" className="ghost-button" onClick={handleDownload}>
-                  保存
-                </button>
-              </div>
-            )}
           </div>
 
           <div className="stage-viewer" style={viewerStyle}>
             <div className="viewer-progress" aria-hidden="true" />
-            {displayVideo ? (
-              isGif ? (
-                <img src={displayVideo} alt="生成結果" />
-              ) : (
-                <video controls src={displayVideo} />
-              )
+            {displayImage ? (
+              <img src={displayImage} alt="生成結果" />
             ) : (
               <div className="stage-placeholder">{emptyMessage}</div>
             )}
@@ -645,7 +720,7 @@ export function Video() {
                   <span className="loading-spinner" aria-hidden="true" />
                   <div>
                     <strong>生成中</strong>
-                    <p>数分かかる可能性があります</p>
+                    <p>約1分で完了予定</p>
                   </div>
                 </div>
               </div>

@@ -3,3 +3,8 @@ dist/
 .env
 .env.local
 .DS_Store
+# Large model weights
+runpod-worker-wan/models/
+runpod-worker-qwen/models/
+*.gguf
+*.safetensors

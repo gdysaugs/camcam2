@@ -1,0 +1,84 @@
+{
+  "image": {
+    "id": "1",
+    "input": "image"
+  },
+  "prompt": {
+    "id": "3",
+    "input": "positive_prompt"
+  },
+  "negative_prompt": {
+    "id": "3",
+    "input": "negative_prompt"
+  },
+  "seed": [
+    {
+      "id": "14",
+      "input": "seed"
+    },
+    {
+      "id": "15",
+      "input": "seed"
+    }
+  ],
+  "steps": [
+    {
+      "id": "14",
+      "input": "steps"
+    },
+    {
+      "id": "15",
+      "input": "steps"
+    }
+  ],
+  "cfg": [
+    {
+      "id": "14",
+      "input": "cfg"
+    },
+    {
+      "id": "15",
+      "input": "cfg"
+    }
+  ],
+  "width": [
+    {
+      "id": "13",
+      "input": "width"
+    },
+    {
+      "id": "19",
+      "input": "target_width"
+    }
+  ],
+  "height": [
+    {
+      "id": "13",
+      "input": "height"
+    },
+    {
+      "id": "19",
+      "input": "target_height"
+    }
+  ],
+  "num_frames": {
+    "id": "13",
+    "input": "num_frames"
+  },
+  "noise_aug_strength": {
+    "id": "13",
+    "input": "noise_aug_strength"
+  },
+  "fps": {
+    "id": "17",
+    "input": "fps"
+  },
+  "end_step": {
+    "id": "14",
+    "input": "end_step"
+  },
+  "start_step": {
+    "id": "15",
+    "input": "start_step"
+  }
+}

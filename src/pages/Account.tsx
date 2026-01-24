@@ -26,10 +26,10 @@ export function Account() {
     return (
       <div className="account-page">
         <div className="account-card">
-          <h1>Account</h1>
-          <p>Sign in to see your account details.</p>
+          <h1>アカウント</h1>
+          <p>ログインするとアカウント情報が表示されます。</p>
           <a className="primary" href="/">
-            Back to chat
+            チャットに戻る
           </a>
         </div>
       </div>
@@ -39,10 +39,10 @@ export function Account() {
   return (
     <div className="account-page">
       <div className="account-card">
-        <h1>Account</h1>
-        <p>{session.user?.email || 'Signed in user'}</p>
+        <h1>アカウント</h1>
+        <p>{session.user?.email || 'ログイン中のユーザー'}</p>
         <button className="ghost" type="button" onClick={handleSignOut}>
-          Sign out
+          ログアウト
         </button>
       </div>
     </div>

@@ -103,6 +103,36 @@ const makeUsageId = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+const fetchTicketRow = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+) => {
+  const email = user.email
+  const { data: byUser, error: userError } = await admin
+    .from('user_tickets')
+    .select('id, email, user_id, tickets')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  if (userError) {
+    return { error: userError }
+  }
+  if (byUser) {
+    return { data: byUser, error: null }
+  }
+  if (!email) {
+    return { data: null, error: null }
+  }
+  const { data: byEmail, error: emailError } = await admin
+    .from('user_tickets')
+    .select('id, email, user_id, tickets')
+    .eq('email', email)
+    .maybeSingle()
+  if (emailError) {
+    return { error: emailError }
+  }
+  return { data: byEmail, error: null }
+}
+
 const ensureTicketAvailable = async (
   admin: ReturnType<typeof createClient>,
   user: User,
@@ -112,11 +142,7 @@ const ensureTicketAvailable = async (
     return { response: jsonResponse({ error: 'Email not available.' }, 400) }
   }
 
-  const { data: existing, error } = await admin
-    .from('user_tickets')
-    .select('id, email, user_id, tickets')
-    .or(`user_id.eq.${user.id},email.eq.${email}`)
-    .maybeSingle()
+  const { data: existing, error } = await fetchTicketRow(admin, user)
 
   if (error) {
     return { response: jsonResponse({ error: error.message }, 500) }
@@ -164,11 +190,7 @@ const consumeTicket = async (
     }
   }
 
-  const { data: existing, error } = await admin
-    .from('user_tickets')
-    .select('id, email, user_id, tickets')
-    .or(`user_id.eq.${user.id},email.eq.${email}`)
-    .maybeSingle()
+  const { data: existing, error } = await fetchTicketRow(admin, user)
 
   if (error) {
     return { response: jsonResponse({ error: error.message }, 500) }
@@ -190,7 +212,6 @@ const consumeTicket = async (
     .from('user_tickets')
     .update({ tickets: existing.tickets - 1, updated_at: new Date().toISOString() })
     .eq('id', existing.id)
-    .eq('tickets', existing.tickets)
     .select('tickets')
     .maybeSingle()
 
@@ -205,6 +226,87 @@ const consumeTicket = async (
     user_id: user.id,
     delta: -1,
     reason: 'generate_video',
+    metadata,
+  })
+
+  if (eventError) {
+    return { response: jsonResponse({ error: eventError.message }, 500) }
+  }
+
+  return { ticketsLeft: updated.tickets }
+}
+
+const refundTicket = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+  metadata: Record<string, unknown>,
+  usageId?: string,
+) => {
+  const email = user.email
+  if (!email || !usageId) {
+    return { skipped: true }
+  }
+
+  const { data: chargeEvent, error: chargeError } = await admin
+    .from('ticket_events')
+    .select('usage_id')
+    .eq('usage_id', usageId)
+    .maybeSingle()
+
+  if (chargeError) {
+    return { response: jsonResponse({ error: chargeError.message }, 500) }
+  }
+
+  if (!chargeEvent) {
+    return { skipped: true }
+  }
+
+  const refundUsageId = `${usageId}:refund`
+  const { data: existingRefund, error: refundCheckError } = await admin
+    .from('ticket_events')
+    .select('usage_id')
+    .eq('usage_id', refundUsageId)
+    .maybeSingle()
+
+  if (refundCheckError) {
+    return { response: jsonResponse({ error: refundCheckError.message }, 500) }
+  }
+
+  if (existingRefund) {
+    return { alreadyRefunded: true }
+  }
+
+  const { data: existing, error } = await fetchTicketRow(admin, user)
+
+  if (error) {
+    return { response: jsonResponse({ error: error.message }, 500) }
+  }
+
+  if (!existing) {
+    return { response: jsonResponse({ error: 'No tickets available.' }, 402) }
+  }
+
+  if (!existing.user_id) {
+    await admin.from('user_tickets').update({ user_id: user.id }).eq('id', existing.id)
+  }
+
+  const { data: updated, error: updateError } = await admin
+    .from('user_tickets')
+    .update({ tickets: existing.tickets + 1, updated_at: new Date().toISOString() })
+    .eq('id', existing.id)
+    .select('tickets')
+    .maybeSingle()
+
+  if (updateError || !updated) {
+    return { response: jsonResponse({ error: 'Failed to refund tickets.' }, 409) }
+  }
+
+  const { error: eventError } = await admin.from('ticket_events').insert({
+    usage_id: refundUsageId,
+    email: existing.email,
+    user_id: user.id,
+    delta: 1,
+    reason: 'refund',
     metadata,
   })
 
@@ -251,6 +353,11 @@ const hasOutputError = (payload: any) =>
       payload?.output?.output?.error ||
       payload?.result?.output?.error,
   )
+
+const isFailureStatus = (payload: any) => {
+  const status = String(payload?.status ?? payload?.state ?? '').toLowerCase()
+  return status.includes('fail') || status.includes('error') || status.includes('cancel')
+}
 
 const shouldConsumeTicket = (payload: any) => {
   const status = String(payload?.status ?? payload?.state ?? '').toLowerCase()
@@ -375,6 +482,21 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
+  if (payload && (isFailureStatus(payload) || hasOutputError(payload))) {
+    const usageId = `wan:${id}`
+    const refundMeta = {
+      job_id: id,
+      status: payload?.status ?? payload?.state ?? null,
+      source: 'status',
+      reason: 'failure',
+    }
+    const refundResult = await refundTicket(auth.admin, auth.user, refundMeta, usageId)
+    const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
+    }
+  }
+
   if (ticketsLeft !== null && payload && typeof payload === 'object' && !Array.isArray(payload)) {
     payload.ticketsLeft = ticketsLeft
     return jsonResponse(payload, upstream.status)
@@ -430,8 +552,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const negativePrompt = String(input?.negative_prompt ?? input?.negative ?? '')
   const steps = Number(input?.steps ?? input?.num_inference_steps ?? 4)
   const cfg = Number(input?.cfg ?? input?.guidance_scale ?? 5)
-  const width = Number(input?.width ?? 912)
-  const height = Number(input?.height ?? 608)
+  const width = Number(input?.width ?? 832)
+  const height = Number(input?.height ?? 576)
   const fps = Number(input?.fps ?? 24)
   const seconds = Number(input?.seconds ?? input?.duration ?? 5)
   const requestedFrames = Number(input?.num_frames ?? input?.frames)
@@ -517,7 +639,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     upstreamPayload = null
   }
 
-  if (upstreamPayload && shouldConsumeTicket(upstreamPayload)) {
+  const jobId = extractJobId(upstreamPayload)
+  const shouldCharge =
+    upstream.ok && Boolean(jobId) && !isFailureStatus(upstreamPayload) && !hasOutputError(upstreamPayload)
+
+  if (shouldCharge && jobId) {
+    const usageId = `wan:${jobId}`
+    const ticketMetaWithJob = {
+      ...ticketMeta,
+      job_id: jobId,
+      status: upstreamPayload?.status ?? upstreamPayload?.state ?? null,
+      source: 'run',
+    }
+    const result = await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId)
+    const nextTickets = Number((result as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
+    }
+  } else if (upstreamPayload && shouldConsumeTicket(upstreamPayload)) {
     const jobId = extractJobId(upstreamPayload)
     const usageId = jobId ? `wan:${jobId}` : undefined
     const ticketMetaWithJob = {

@@ -575,6 +575,12 @@
   font-size: 0.85rem;
 }
 
+.stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .angle-indicator {
   padding: 10px 14px;
   border-radius: 18px;
