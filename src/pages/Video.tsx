@@ -68,6 +68,58 @@ const normalizeVideo = (value: unknown, filename?: string) => {
   return `data:${mime};base64,${value}`
 }
 
+const base64ToBlob = (base64: string, mime: string) => {
+  const chunkSize = 0x8000
+  const byteChars = atob(base64)
+  const byteArrays: Uint8Array[] = []
+  for (let offset = 0; offset < byteChars.length; offset += chunkSize) {
+    const slice = byteChars.slice(offset, offset + chunkSize)
+    const byteNumbers = new Array(slice.length)
+    for (let i = 0; i < slice.length; i += 1) {
+      byteNumbers[i] = slice.charCodeAt(i)
+    }
+    byteArrays.push(new Uint8Array(byteNumbers))
+  }
+  return new Blob(byteArrays, { type: mime })
+}
+
+const dataUrlToBlob = (dataUrl: string, fallbackMime: string) => {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
+  if (!match) {
+    return base64ToBlob(dataUrl, fallbackMime)
+  }
+  const mime = match[1] || fallbackMime
+  const base64 = match[2] || ''
+  return base64ToBlob(base64, mime)
+}
+
+const isProbablyMobile = () => {
+  if (typeof navigator === 'undefined') return false
+  const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData
+  if (uaData && typeof uaData.mobile === 'boolean') {
+    return uaData.mobile
+  }
+  const ua = navigator.userAgent || ''
+  if (/Android|iPhone|iPad|iPod/i.test(ua)) return true
+  if (/Macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number') {
+    return navigator.maxTouchPoints > 1
+  }
+  return false
+}
+
+const extractErrorMessage = (payload: any) =>
+  payload?.error ||
+  payload?.message ||
+  payload?.output?.error ||
+  payload?.result?.error ||
+  payload?.output?.output?.error ||
+  payload?.result?.output?.error
+
+const isFailureStatus = (status: string) => {
+  const normalized = status.toLowerCase()
+  return normalized.includes('fail') || normalized.includes('error') || normalized.includes('cancel')
+}
+
 const alignTo16 = (value: number) => Math.max(16, Math.round(value / 16) * 16)
 const PORTRAIT_MAX = { width: 576, height: 832 }
 const LANDSCAPE_MAX = { width: 832, height: 576 }
@@ -338,8 +390,9 @@ export function Video() {
         setTicketCount(nextTickets)
       }
       const status = String(data?.status || data?.state || '').toLowerCase()
-      if (status.includes('fail')) {
-        throw new Error(data?.error || '生成に失敗しました。')
+      const statusError = extractErrorMessage(data)
+      if (statusError || isFailureStatus(status)) {
+        throw new Error(statusError || '生成に失敗しました。')
       }
       const videos = extractVideoList(data)
       if (videos.length) {
@@ -507,8 +560,28 @@ export function Video() {
     const ext = isGif ? 'gif' : 'mp4'
     const filename = `${baseName}.${ext}`
     try {
-      const response = await fetch(displayVideo)
-      const blob = await response.blob()
+      let blob: Blob
+      if (displayVideo.startsWith('data:')) {
+        blob = dataUrlToBlob(displayVideo, isGif ? 'image/gif' : 'video/mp4')
+      } else if (displayVideo.startsWith('http') || displayVideo.startsWith('blob:')) {
+        const response = await fetch(displayVideo)
+        blob = await response.blob()
+      } else {
+        blob = base64ToBlob(displayVideo, isGif ? 'image/gif' : 'video/mp4')
+      }
+      const fileType = blob.type || (isGif ? 'image/gif' : 'video/mp4')
+      const file = new File([blob], filename, { type: fileType })
+      const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+      const canShareFiles =
+        canShare && typeof navigator.canShare === 'function' ? navigator.canShare({ files: [file] }) : canShare
+      if (isProbablyMobile() && canShareFiles) {
+        try {
+          await navigator.share({ files: [file], title: filename })
+          return
+        } catch {
+          // Ignore share cancellations and fall back to download.
+        }
+      }
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -516,9 +589,9 @@ export function Video() {
       document.body.appendChild(link)
       link.click()
       link.remove()
-      URL.revokeObjectURL(url)
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch {
-      window.open(displayVideo, '_blank', 'noopener')
+      window.location.assign(displayVideo)
     }
   }, [displayVideo, isGif, sourceName])
 

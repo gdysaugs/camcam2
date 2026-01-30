@@ -180,6 +180,58 @@ const downloadBlob = (blob: Blob, filename: string) => {
   URL.revokeObjectURL(url)
 }
 
+const base64ToBlob = (base64: string, mime: string) => {
+  const chunkSize = 0x8000
+  const byteChars = atob(base64)
+  const byteArrays: Uint8Array[] = []
+  for (let offset = 0; offset < byteChars.length; offset += chunkSize) {
+    const slice = byteChars.slice(offset, offset + chunkSize)
+    const byteNumbers = new Array(slice.length)
+    for (let i = 0; i < slice.length; i += 1) {
+      byteNumbers[i] = slice.charCodeAt(i)
+    }
+    byteArrays.push(new Uint8Array(byteNumbers))
+  }
+  return new Blob(byteArrays, { type: mime })
+}
+
+const dataUrlToBlob = (dataUrl: string, fallbackMime: string) => {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
+  if (!match) {
+    return base64ToBlob(dataUrl, fallbackMime)
+  }
+  const mime = match[1] || fallbackMime
+  const base64 = match[2] || ''
+  return base64ToBlob(base64, mime)
+}
+
+const isProbablyMobile = () => {
+  if (typeof navigator === 'undefined') return false
+  const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData
+  if (uaData && typeof uaData.mobile === 'boolean') {
+    return uaData.mobile
+  }
+  const ua = navigator.userAgent || ''
+  if (/Android|iPhone|iPad|iPod/i.test(ua)) return true
+  if (/Macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number') {
+    return navigator.maxTouchPoints > 1
+  }
+  return false
+}
+
+const extractErrorMessage = (payload: any) =>
+  payload?.error ||
+  payload?.message ||
+  payload?.output?.error ||
+  payload?.result?.error ||
+  payload?.output?.output?.error ||
+  payload?.result?.output?.error
+
+const isFailureStatus = (status: string) => {
+  const normalized = status.toLowerCase()
+  return normalized.includes('fail') || normalized.includes('error') || normalized.includes('cancel')
+}
+
 export function Camera() {
   const [sourcePreview, setSourcePreview] = useState<string | null>(null)
   const [sourcePayload, setSourcePayload] = useState<string | null>(null)
@@ -346,37 +398,43 @@ export function Camera() {
         body: JSON.stringify({ input }),
       })
       const data = await res.json().catch(() => ({}))
+      const usageId = String(data?.usage_id ?? data?.usageId ?? '')
       if (!res.ok) {
         const message = data?.error || data?.message || '生成に失敗しました。'
         throw new Error(message)
       }
       const images = extractImageList(data)
       if (images.length) {
-        return { images }
+        return { images, usageId }
       }
       const jobId = extractJobId(data)
       if (!jobId) throw new Error('ジョブIDが取得できませんでした。')
-      return { jobId }
+      return { jobId, usageId }
     },
     [guidanceScale, negativePrompt],
   )
 
-  const pollJob = useCallback(async (jobId: string, runId: number, token?: string) => {
+  const pollJob = useCallback(async (jobId: string, runId: number, token?: string, usageId?: string) => {
     for (let i = 0; i < 120; i += 1) {
       if (runIdRef.current !== runId) return { status: 'cancelled' as const, images: [] }
       const headers: Record<string, string> = {}
       if (token) {
         headers.Authorization = `Bearer ${token}`
       }
-      const res = await fetch(`${API_ENDPOINT}?id=${encodeURIComponent(jobId)}`, { headers })
+      const query = new URLSearchParams({ id: jobId })
+      if (usageId) {
+        query.set('usage_id', usageId)
+      }
+      const res = await fetch(`${API_ENDPOINT}?${query.toString()}`, { headers })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         const message = data?.error || data?.message || 'ステータス取得に失敗しました。'
         throw new Error(message)
       }
       const status = String(data?.status || data?.state || '').toLowerCase()
-      if (status.includes('fail')) {
-        throw new Error(data?.error || '生成に失敗しました。')
+      const statusError = extractErrorMessage(data)
+      if (statusError || isFailureStatus(status)) {
+        throw new Error(statusError || '生成に失敗しました。')
       }
       const images = extractImageList(data)
       if (images.length) {
@@ -432,7 +490,11 @@ export function Camera() {
               return
             }
             if ('jobId' in submitted) {
-              const polled = await pollJob(submitted.jobId, runId, accessToken)
+              const submittedUsage = (submitted as { usageId?: string }).usageId ?? ''
+              if (!submittedUsage) {
+                throw new Error('usage_idが取得できませんでした。')
+              }
+              const polled = await pollJob(submitted.jobId, runId, accessToken, submittedUsage)
               if (runIdRef.current !== runId) return
               if (polled.status === 'done' && polled.images.length) {
                 applyImageAt(0, polled.images[0])
@@ -587,24 +649,38 @@ export function Camera() {
   const handleSaveImage = useCallback(async () => {
     if (!displayImage) return
     const baseLabel = sanitizeFilename(sourceName || sourceNameSub || 'qwen-edit') || 'qwen-edit'
-    const isRemote = displayImage.startsWith('http')
-    const downloadUrl = isRemote ? `/api/download?url=${encodeURIComponent(displayImage)}` : displayImage
     try {
-      const headers: Record<string, string> = {}
-      if (isRemote && accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`
+      let blob: Blob
+      if (displayImage.startsWith('data:')) {
+        blob = dataUrlToBlob(displayImage, 'image/png')
+      } else if (displayImage.startsWith('http') || displayImage.startsWith('blob:')) {
+        const response = await fetch(displayImage, { cache: 'force-cache' })
+        if (!response.ok) {
+          throw new Error('Failed to download image.')
+        }
+        blob = await response.blob()
+      } else {
+        blob = base64ToBlob(displayImage, 'image/png')
       }
-      const response = await fetch(downloadUrl, { cache: 'force-cache', headers })
-      if (!response.ok) {
-        throw new Error('Failed to download image.')
+      const extension = inferImageExtension(displayImage, blob.type)
+      const fileType = blob.type || `image/${extension}`
+      const file = new File([blob], `${baseLabel}.${extension}`, { type: fileType })
+      const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+      const canShareFiles =
+        canShare && typeof navigator.canShare === 'function' ? navigator.canShare({ files: [file] }) : canShare
+      if (isProbablyMobile() && canShareFiles) {
+        try {
+          await navigator.share({ files: [file], title: file.name })
+          return
+        } catch {
+          // Ignore share cancellations and fall back to download.
+        }
       }
-      const blob = await response.blob()
-      const extension = inferImageExtension(displayImage, response.headers.get('content-type') || blob.type)
-      downloadBlob(blob, `${baseLabel}.${extension}`)
+      downloadBlob(blob, file.name)
     } catch {
       window.open(displayImage, '_blank', 'noopener')
     }
-  }, [accessToken, displayImage, sourceName, sourceNameSub])
+  }, [displayImage, sourceName, sourceNameSub])
 
   if (!session) {
     return (

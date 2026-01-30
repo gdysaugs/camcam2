@@ -1,6 +1,7 @@
 ﻿import workflowTemplate from './qwen-workflow.json'
 import nodeMapTemplate from './qwen-node-map.json'
 import { createClient, type User } from '@supabase/supabase-js'
+import { buildCorsHeaders, isCorsBlocked } from '../_shared/cors'
 
 type Env = {
   RUNPOD_API_KEY: string
@@ -11,16 +12,12 @@ type Env = {
   SUPABASE_SERVICE_ROLE_KEY?: string
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-}
+const corsMethods = 'POST, GET, OPTIONS'
 
-const jsonResponse = (body: unknown, status = 200) =>
+const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
   })
 
 const resolveEndpoint = (env: Env) => env.RUNPOD_ENDPOINT_URL?.replace(/\/$/, '')
@@ -46,6 +43,16 @@ type NodeMap = Partial<{
 }>
 
 const SIGNUP_TICKET_GRANT = 3
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_PROMPT_LENGTH = 100
+const MAX_NEGATIVE_PROMPT_LENGTH = 100
+const FIXED_STEPS = 4
+const MIN_DIMENSION = 256
+const MAX_DIMENSION = 3000
+const MIN_GUIDANCE = 0
+const MAX_GUIDANCE = 10
+const MIN_ANGLE_STRENGTH = 0
+const MAX_ANGLE_STRENGTH = 1
 
 const getWorkflowTemplate = async () => workflowTemplate as Record<string, unknown>
 
@@ -76,21 +83,21 @@ const isGoogleUser = (user: User) => {
   return false
 }
 
-const requireGoogleUser = async (request: Request, env: Env) => {
+const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401) }
+    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
-    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500) }
+    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500, corsHeaders) }
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401) }
+    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403) }
+    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -179,20 +186,21 @@ const ensureTicketRow = async (
 const ensureTicketAvailable = async (
   admin: ReturnType<typeof createClient>,
   user: User,
+  corsHeaders: HeadersInit,
 ) => {
   const email = user.email
   if (!email) {
-    return { response: jsonResponse({ error: 'メールアドレスが取得できません。' }, 400) }
+    return { response: jsonResponse({ error: 'メールアドレスが取得できません。' }, 400, corsHeaders) }
   }
 
   const { data: existing, error } = await ensureTicketRow(admin, user)
 
   if (error) {
-    return { response: jsonResponse({ error: error.message }, 500) }
+    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
   }
 
   if (!existing) {
-    return { response: jsonResponse({ error: 'チケットがありません。' }, 402) }
+    return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
   }
 
   if (!existing.user_id) {
@@ -200,7 +208,7 @@ const ensureTicketAvailable = async (
   }
 
   if (existing.tickets < 1) {
-    return { response: jsonResponse({ error: 'チケットがありません。' }, 402) }
+    return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
   }
 
   return { existing }
@@ -210,37 +218,22 @@ const consumeTicket = async (
   admin: ReturnType<typeof createClient>,
   user: User,
   metadata: Record<string, unknown>,
-  usageId?: string,
+  usageId: string | undefined,
+  corsHeaders: HeadersInit,
 ) => {
   const email = user.email
   if (!email) {
-    return { response: jsonResponse({ error: 'メールアドレスが取得できません。' }, 400) }
-  }
-
-  if (usageId) {
-    const { data: existingEvent, error: eventCheckError } = await admin
-      .from('ticket_events')
-      .select('usage_id')
-      .eq('usage_id', usageId)
-      .maybeSingle()
-
-    if (eventCheckError) {
-      return { response: jsonResponse({ error: eventCheckError.message }, 500) }
-    }
-
-    if (existingEvent) {
-      return { alreadyConsumed: true }
-    }
+    return { response: jsonResponse({ error: 'メールアドレスが取得できません。' }, 400, corsHeaders) }
   }
 
   const { data: existing, error } = await ensureTicketRow(admin, user)
 
   if (error) {
-    return { response: jsonResponse({ error: error.message }, 500) }
+    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
   }
 
   if (!existing) {
-    return { response: jsonResponse({ error: 'チケットがありません。' }, 402) }
+    return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
   }
 
   if (!existing.user_id) {
@@ -248,36 +241,116 @@ const consumeTicket = async (
   }
 
   if (existing.tickets < 1) {
-    return { response: jsonResponse({ error: 'チケットがありません。' }, 402) }
-  }
-
-  const { data: updated, error: updateError } = await admin
-    .from('user_tickets')
-    .update({ tickets: existing.tickets - 1, updated_at: new Date().toISOString() })
-    .eq('id', existing.id)
-    .eq('tickets', existing.tickets)
-    .select('tickets')
-    .maybeSingle()
-
-  if (updateError || !updated) {
-    return { response: jsonResponse({ error: 'チケット消費に失敗しました。' }, 409) }
+    return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
   }
 
   const resolvedUsageId = usageId ?? makeUsageId()
-  const { error: eventError } = await admin.from('ticket_events').insert({
-    usage_id: resolvedUsageId,
-    email: existing.email,
-    user_id: user.id,
-    delta: -1,
-    reason: 'generate',
-    metadata,
+  const { data: rpcData, error: rpcError } = await admin.rpc('consume_tickets', {
+    p_ticket_id: existing.id,
+    p_usage_id: resolvedUsageId,
+    p_cost: 1,
+    p_reason: 'generate',
+    p_metadata: metadata,
   })
 
-  if (eventError) {
-    return { response: jsonResponse({ error: eventError.message }, 500) }
+  if (rpcError) {
+    const message = rpcError.message ?? 'チケット消費に失敗しました。'
+    if (message.includes('INSUFFICIENT_TICKETS')) {
+      return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
+    }
+    if (message.includes('INVALID')) {
+      return { response: jsonResponse({ error: '不正なチケット操作です。' }, 400, corsHeaders) }
+    }
+    return { response: jsonResponse({ error: message }, 500, corsHeaders) }
   }
 
-  return { ticketsLeft: updated.tickets }
+  const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
+  const ticketsLeft = Number(result?.tickets_left)
+  const alreadyConsumed = Boolean(result?.already_consumed)
+  return {
+    ticketsLeft: Number.isFinite(ticketsLeft) ? ticketsLeft : undefined,
+    alreadyConsumed,
+  }
+}
+
+const refundTicket = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+  metadata: Record<string, unknown>,
+  usageId: string | undefined,
+  corsHeaders: HeadersInit,
+) => {
+  const email = user.email
+  if (!email || !usageId) {
+    return { skipped: true }
+  }
+
+  const { data: chargeEvent, error: chargeError } = await admin
+    .from('ticket_events')
+    .select('usage_id')
+    .eq('usage_id', usageId)
+    .maybeSingle()
+
+  if (chargeError) {
+    return { response: jsonResponse({ error: chargeError.message }, 500, corsHeaders) }
+  }
+
+  if (!chargeEvent) {
+    return { skipped: true }
+  }
+
+  const refundUsageId = `${usageId}:refund`
+  const { data: existingRefund, error: refundCheckError } = await admin
+    .from('ticket_events')
+    .select('usage_id')
+    .eq('usage_id', refundUsageId)
+    .maybeSingle()
+
+  if (refundCheckError) {
+    return { response: jsonResponse({ error: refundCheckError.message }, 500, corsHeaders) }
+  }
+
+  if (existingRefund) {
+    return { alreadyRefunded: true }
+  }
+
+  const { data: existing, error } = await ensureTicketRow(admin, user)
+
+  if (error) {
+    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
+  }
+
+  if (!existing) {
+    return { response: jsonResponse({ error: 'チケットがありません。' }, 402, corsHeaders) }
+  }
+
+  if (!existing.user_id) {
+    await admin.from('user_tickets').update({ user_id: user.id }).eq('id', existing.id)
+  }
+
+  const { data: rpcData, error: rpcError } = await admin.rpc('refund_tickets', {
+    p_ticket_id: existing.id,
+    p_usage_id: refundUsageId,
+    p_amount: 1,
+    p_reason: 'refund',
+    p_metadata: metadata,
+  })
+
+  if (rpcError) {
+    const message = rpcError.message ?? 'チケット払い戻しに失敗しました。'
+    if (message.includes('INVALID')) {
+      return { response: jsonResponse({ error: message }, 400, corsHeaders) }
+    }
+    return { response: jsonResponse({ error: message }, 500, corsHeaders) }
+  }
+
+  const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
+  const ticketsLeft = Number(result?.tickets_left)
+  const alreadyRefunded = Boolean(result?.already_refunded)
+  return {
+    ticketsLeft: Number.isFinite(ticketsLeft) ? ticketsLeft : undefined,
+    alreadyRefunded,
+  }
 }
 
 const hasOutputList = (value: unknown) => Array.isArray(value) && value.length > 0
@@ -317,6 +390,11 @@ const hasOutputError = (payload: any) =>
       payload?.result?.output?.error,
   )
 
+const isFailureStatus = (payload: any) => {
+  const status = String(payload?.status ?? payload?.state ?? '').toLowerCase()
+  return status.includes('fail') || status.includes('error') || status.includes('cancel')
+}
+
 const shouldConsumeTicket = (payload: any) => {
   const status = String(payload?.status ?? payload?.state ?? '').toLowerCase()
   const isFailure = status.includes('fail') || status.includes('error') || status.includes('cancel')
@@ -347,23 +425,27 @@ const stripDataUrl = (value: string) => {
   return value
 }
 
-const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-  const bytes = new Uint8Array(buffer)
-  const chunkSize = 0x8000
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-  }
-  return btoa(binary)
+const isHttpUrl = (value: string) => /^https?:\/\//i.test(value.trim())
+
+const estimateBase64Bytes = (value: string) => {
+  const trimmed = value.trim()
+  const padding = trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
 }
 
-const fetchImageBase64 = async (url: string) => {
-  const res = await fetch(url)
-  if (!res.ok) {
-    throw new Error('Failed to fetch image_url.')
+const ensureBase64Input = (label: string, value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return ''
+  const trimmed = value.trim()
+  if (isHttpUrl(trimmed)) {
+    throw new Error(`${label} must be base64 (image_url is not allowed).`)
   }
-  const buffer = await res.arrayBuffer()
-  return arrayBufferToBase64(buffer)
+  const base64 = stripDataUrl(trimmed)
+  if (!base64) return ''
+  const bytes = estimateBase64Bytes(base64)
+  if (bytes > MAX_IMAGE_BYTES) {
+    throw new Error(`${label} is too large.`)
+  }
+  return base64
 }
 
 const pickInputValue = (input: Record<string, unknown>, keys: string[]) => {
@@ -380,14 +462,15 @@ const resolveImageBase64 = async (
   input: Record<string, unknown>,
   valueKeys: string[],
   urlKeys: string[],
+  label: string,
 ) => {
   const urlValue = pickInputValue(input, urlKeys)
   if (typeof urlValue === 'string' && urlValue) {
-    return await fetchImageBase64(urlValue)
+    throw new Error(`${label} must be base64 (image_url is not allowed).`)
   }
   const value = pickInputValue(input, valueKeys)
   if (!value) return ''
-  return stripDataUrl(String(value))
+  return ensureBase64Input(label, value)
 }
 
 const setInputValue = (
@@ -417,46 +500,72 @@ const applyNodeMap = (
   }
 }
 
-export const onRequestOptions: PagesFunction = async () => new Response(null, { headers: corsHeaders })
+export const onRequestOptions: PagesFunction<Env> = async ({ request, env }) => {
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+  return new Response(null, { headers: corsHeaders })
+}
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireGoogleUser(request, env)
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+
+  const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
     return auth.response
   }
 
   const url = new URL(request.url)
   const id = url.searchParams.get('id')
+  const usageId = url.searchParams.get('usage_id') ?? url.searchParams.get('usageId') ?? ''
   if (!id) {
-    return jsonResponse({ error: 'id is required.' }, 400)
+    return jsonResponse({ error: 'id is required.' }, 400, corsHeaders)
+  }
+  if (!usageId) {
+    return jsonResponse({ error: 'usage_id is required.' }, 400, corsHeaders)
   }
   if (!env.RUNPOD_API_KEY) {
-    return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500)
+    return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
   }
 
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500)
+    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500, corsHeaders)
   }
   const upstream = await fetch(`${endpoint}/status/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
   })
   const raw = await upstream.text()
   let payload: any = null
+  let ticketsLeft: number | null = null
   try {
     payload = JSON.parse(raw)
   } catch {
     payload = null
   }
 
-  if (payload && shouldConsumeTicket(payload)) {
-    const usageId = `qwen:${id}`
+  if (payload && (isFailureStatus(payload) || hasOutputError(payload))) {
     const ticketMeta = {
       job_id: id,
       status: payload?.status ?? payload?.state ?? null,
       source: 'status',
+      reason: 'failure',
     }
-    await consumeTicket(auth.admin, auth.user, ticketMeta, usageId)
+    const refundResult = await refundTicket(auth.admin, auth.user, ticketMeta, usageId, corsHeaders)
+    const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
+    }
+  }
+
+  if (ticketsLeft !== null && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    payload.ticketsLeft = ticketsLeft
+    payload.usage_id = usageId
+    return jsonResponse(payload, upstream.status, corsHeaders)
   }
 
   return new Response(raw, {
@@ -466,23 +575,28 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireGoogleUser(request, env)
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+
+  const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
     return auth.response
   }
 
   if (!env.RUNPOD_API_KEY) {
-    return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500)
+    return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
   }
 
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500)
+    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500, corsHeaders)
   }
 
   const payload = await request.json().catch(() => null)
   if (!payload) {
-    return jsonResponse({ error: 'Invalid request body.' }, 400)
+    return jsonResponse({ error: 'Invalid request body.' }, 400, corsHeaders)
   }
 
   const input = payload.input ?? payload
@@ -494,33 +608,74 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       safeInput,
       ['image_base64', 'image', 'image_base64_1', 'image1'],
       ['image_url'],
+      'image',
     )
     subImageBase64Raw = await resolveImageBase64(
       safeInput,
       ['sub_image_base64', 'sub_image', 'image2', 'image2_base64', 'image_base64_2'],
       ['sub_image_url', 'image2_url', 'image_url_2'],
+      'sub_image',
     )
   } catch (error) {
-    return jsonResponse({ error: error instanceof Error ? error.message : 'Failed to read image.' }, 400)
+    return jsonResponse({ error: error instanceof Error ? error.message : 'Failed to read image.' }, 400, corsHeaders)
   }
 
   if (!imageBase64) {
-    return jsonResponse({ error: 'image is required.' }, 400)
+    return jsonResponse({ error: 'image is required.' }, 400, corsHeaders)
   }
 
   const subImageBase64 = subImageBase64Raw || imageBase64
 
   const prompt = String(input?.prompt ?? input?.text ?? '')
   const negativePrompt = String(input?.negative_prompt ?? input?.negative ?? '')
-  const steps = Number(input?.num_inference_steps ?? input?.steps ?? 4)
+  const steps = FIXED_STEPS
   const guidanceScale = Number(input?.guidance_scale ?? input?.cfg ?? 1)
-  const width = Number(input?.width ?? 768)
-  const height = Number(input?.height ?? 768)
+  const width = Math.floor(Number(input?.width ?? 768))
+  const height = Math.floor(Number(input?.height ?? 768))
   const angleStrengthInput = input?.angle_strength ?? input?.multiangle_strength ?? undefined
   const angleStrength =
-    angleStrengthInput === undefined || angleStrengthInput === null ? undefined : Number(angleStrengthInput)
+    angleStrengthInput === undefined || angleStrengthInput === null ? 0 : Number(angleStrengthInput)
   const workerMode = String(input?.worker_mode ?? input?.mode ?? env.RUNPOD_WORKER_MODE ?? '').toLowerCase()
-  const useComfyUi = workerMode === 'comfyui' || Boolean(input?.workflow)
+  const useComfyUi = workerMode === 'comfyui'
+
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    return jsonResponse({ error: 'Prompt is too long.' }, 400, corsHeaders)
+  }
+  if (negativePrompt.length > MAX_NEGATIVE_PROMPT_LENGTH) {
+    return jsonResponse({ error: 'Negative prompt is too long.' }, 400, corsHeaders)
+  }
+  if (!Number.isFinite(guidanceScale) || guidanceScale < MIN_GUIDANCE || guidanceScale > MAX_GUIDANCE) {
+    return jsonResponse(
+      { error: `guidance_scale must be between ${MIN_GUIDANCE} and ${MAX_GUIDANCE}.` },
+      400,
+      corsHeaders,
+    )
+  }
+  if (!Number.isFinite(width) || width < MIN_DIMENSION || width > MAX_DIMENSION) {
+    return jsonResponse(
+      { error: `width must be between ${MIN_DIMENSION} and ${MAX_DIMENSION}.` },
+      400,
+      corsHeaders,
+    )
+  }
+  if (!Number.isFinite(height) || height < MIN_DIMENSION || height > MAX_DIMENSION) {
+    return jsonResponse(
+      { error: `height must be between ${MIN_DIMENSION} and ${MAX_DIMENSION}.` },
+      400,
+      corsHeaders,
+    )
+  }
+  if (!Number.isFinite(angleStrength) || angleStrength < MIN_ANGLE_STRENGTH || angleStrength > MAX_ANGLE_STRENGTH) {
+    return jsonResponse(
+      { error: `angle_strength must be between ${MIN_ANGLE_STRENGTH} and ${MAX_ANGLE_STRENGTH}.` },
+      400,
+      corsHeaders,
+    )
+  }
+
+  if (safeInput?.workflow) {
+    return jsonResponse({ error: 'workflow overrides are not allowed.' }, 400, corsHeaders)
+  }
 
   const ticketMeta = {
     prompt_length: prompt.length,
@@ -529,9 +684,39 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     steps,
     mode: useComfyUi ? 'comfyui' : 'runpod',
   }
-  const ticketCheck = await ensureTicketAvailable(auth.admin, auth.user)
+  const ticketCheck = await ensureTicketAvailable(auth.admin, auth.user, corsHeaders)
   if ('response' in ticketCheck) {
     return ticketCheck.response
+  }
+
+  let workflow: Record<string, unknown> | null = null
+  let nodeMap: NodeMap | null = null
+  if (useComfyUi) {
+    workflow = clone(await getWorkflowTemplate())
+    if (!workflow || Object.keys(workflow).length === 0) {
+      return jsonResponse({ error: 'workflow.json is empty. Export a ComfyUI API workflow.' }, 500, corsHeaders)
+    }
+    nodeMap = await getNodeMap().catch(() => null)
+    const hasNodeMap = nodeMap && Object.keys(nodeMap).length > 0
+    if (!hasNodeMap) {
+      return jsonResponse({ error: 'node_map.json is empty.' }, 500, corsHeaders)
+    }
+  }
+
+  const usageId = `qwen:${makeUsageId()}`
+  let ticketsLeft: number | null = null
+  const ticketMetaWithUsage = {
+    ...ticketMeta,
+    usage_id: usageId,
+    source: 'run',
+  }
+  const ticketCharge = await consumeTicket(auth.admin, auth.user, ticketMetaWithUsage, usageId, corsHeaders)
+  if ('response' in ticketCharge) {
+    return ticketCharge.response
+  }
+  const consumedTickets = Number((ticketCharge as { ticketsLeft?: unknown }).ticketsLeft)
+  if (Number.isFinite(consumedTickets)) {
+    ticketsLeft = consumedTickets
   }
 
   if (useComfyUi) {
@@ -545,34 +730,22 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     } else if (subImageName === imageName) {
       subImageName = 'sub.png'
     }
-    const workflow = input?.workflow ? clone(input.workflow) : clone(await getWorkflowTemplate())
-    if (!workflow || Object.keys(workflow).length === 0) {
-      return jsonResponse({ error: 'workflow.json is empty. Export a ComfyUI API workflow.' }, 500)
+
+    const nodeValues: Record<string, unknown> = {
+      image: imageName,
+      image2: subImageName,
+      prompt,
+      negative_prompt: negativePrompt,
+      seed,
+      steps,
+      cfg: guidanceScale,
+      width,
+      height,
+      angle_strength: angleStrength,
     }
+    applyNodeMap(workflow as Record<string, any>, nodeMap as NodeMap, nodeValues)
 
-    const nodeMap = await getNodeMap().catch(() => null)
-    const hasNodeMap = nodeMap && Object.keys(nodeMap).length > 0
-    const shouldApplyNodeMap = input?.apply_node_map !== false
-
-    if (shouldApplyNodeMap && hasNodeMap) {
-      const nodeValues: Record<string, unknown> = {
-        image: imageName,
-        image2: subImageName,
-        prompt,
-        negative_prompt: negativePrompt,
-        seed,
-        steps,
-        cfg: guidanceScale,
-        width,
-        height,
-        angle_strength: angleStrength,
-      }
-      applyNodeMap(workflow as Record<string, any>, nodeMap, nodeValues)
-    } else if (!input?.workflow) {
-      return jsonResponse({ error: 'node_map.json is empty. Provide a node map or send workflow directly.' }, 500)
-    }
-
-    const comfyKey = String(input?.comfy_org_api_key ?? env.COMFY_ORG_API_KEY ?? '')
+    const comfyKey = String(env.COMFY_ORG_API_KEY ?? '')
     const images = [{ name: imageName, image: imageBase64 }]
     if (subImageName !== imageName) {
       images.push({ name: subImageName, image: subImageBase64 })
@@ -601,22 +774,41 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       upstreamPayload = null
     }
 
-    if (upstreamPayload && shouldConsumeTicket(upstreamPayload)) {
-      const jobId = extractJobId(upstreamPayload)
-      const usageId = jobId ? `qwen:${jobId}` : undefined
-      const ticketMetaWithJob = {
-        ...ticketMeta,
-        job_id: jobId ?? undefined,
-        status: upstreamPayload?.status ?? upstreamPayload?.state ?? null,
-        source: 'run',
+    if (!upstreamPayload || typeof upstreamPayload !== 'object' || Array.isArray(upstreamPayload)) {
+      const refundResult = await refundTicket(
+        auth.admin,
+        auth.user,
+        { ...ticketMetaWithUsage, reason: 'parse_error' },
+        usageId,
+        corsHeaders,
+      )
+      const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+      if (Number.isFinite(nextTickets)) {
+        ticketsLeft = nextTickets
       }
-      await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId)
+      return jsonResponse({ error: 'Upstream response is invalid.', usage_id: usageId, ticketsLeft }, 502, corsHeaders)
     }
 
-    return new Response(raw, {
-      status: upstream.status,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    const isFailure = !upstream.ok || isFailureStatus(upstreamPayload) || hasOutputError(upstreamPayload)
+    if (isFailure) {
+      const refundResult = await refundTicket(
+        auth.admin,
+        auth.user,
+        { ...ticketMetaWithUsage, reason: 'failure', status: upstreamPayload?.status ?? upstreamPayload?.state ?? null },
+        usageId,
+        corsHeaders,
+      )
+      const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+      if (Number.isFinite(nextTickets)) {
+        ticketsLeft = nextTickets
+      }
+    }
+
+    upstreamPayload.usage_id = usageId
+    if (ticketsLeft !== null) {
+      upstreamPayload.ticketsLeft = ticketsLeft
+    }
+    return jsonResponse(upstreamPayload, upstream.status, corsHeaders)
   }
 
   const runpodInput = {
@@ -660,20 +852,39 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     upstreamPayload = null
   }
 
-  if (upstreamPayload && shouldConsumeTicket(upstreamPayload)) {
-    const jobId = extractJobId(upstreamPayload)
-    const usageId = jobId ? `qwen:${jobId}` : undefined
-    const ticketMetaWithJob = {
-      ...ticketMeta,
-      job_id: jobId ?? undefined,
-      status: upstreamPayload?.status ?? upstreamPayload?.state ?? null,
-      source: 'run',
+  if (!upstreamPayload || typeof upstreamPayload !== 'object' || Array.isArray(upstreamPayload)) {
+    const refundResult = await refundTicket(
+      auth.admin,
+      auth.user,
+      { ...ticketMetaWithUsage, reason: 'parse_error' },
+      usageId,
+      corsHeaders,
+    )
+    const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
     }
-    await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId)
+    return jsonResponse({ error: 'Upstream response is invalid.', usage_id: usageId, ticketsLeft }, 502, corsHeaders)
   }
 
-  return new Response(raw, {
-    status: upstream.status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  })
+  const isFailure = !upstream.ok || isFailureStatus(upstreamPayload) || hasOutputError(upstreamPayload)
+  if (isFailure) {
+    const refundResult = await refundTicket(
+      auth.admin,
+      auth.user,
+      { ...ticketMetaWithUsage, reason: 'failure', status: upstreamPayload?.status ?? upstreamPayload?.state ?? null },
+      usageId,
+      corsHeaders,
+    )
+    const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
+    }
+  }
+
+  upstreamPayload.usage_id = usageId
+  if (ticketsLeft !== null) {
+    upstreamPayload.ticketsLeft = ticketsLeft
+  }
+  return jsonResponse(upstreamPayload, upstream.status, corsHeaders)
 }

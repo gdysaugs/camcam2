@@ -106,65 +106,31 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500)
   }
 
-  const { data: existingEvent } = await admin
-    .from('ticket_events')
-    .select('id')
-    .eq('usage_id', usageId)
-    .maybeSingle()
-
-  if (existingEvent) {
-    return jsonResponse({ received: true, duplicate: true })
-  }
-
-  const { data: ticketRow, error: ticketError } = await admin
-    .from('user_tickets')
-    .select('id, tickets, stripe_customer_id')
-    .or(`user_id.eq.${userId},email.eq.${email}`)
-    .maybeSingle()
-
-  if (ticketError) {
-    return jsonResponse({ error: ticketError.message }, 500)
-  }
-
-  if (ticketRow) {
-    const { error: updateError } = await admin
-      .from('user_tickets')
-      .update({
-        tickets: ticketRow.tickets + tickets,
-        stripe_customer_id: stripeCustomerId ?? ticketRow.stripe_customer_id,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', ticketRow.id)
-    if (updateError) {
-      return jsonResponse({ error: updateError.message }, 500)
-    }
-  } else {
-    const { error: insertError } = await admin.from('user_tickets').insert({
-      email,
-      user_id: userId,
-      tickets,
-      stripe_customer_id: stripeCustomerId,
-    })
-    if (insertError) {
-      return jsonResponse({ error: insertError.message }, 500)
-    }
-  }
-
-  const { error: eventError } = await admin.from('ticket_events').insert({
-    usage_id: usageId,
-    email,
-    user_id: userId,
-    delta: tickets,
-    reason: 'stripe_purchase',
-    metadata: {
+  const { data: rpcData, error: rpcError } = await admin.rpc('grant_tickets', {
+    p_usage_id: usageId,
+    p_user_id: userId,
+    p_email: email,
+    p_amount: tickets,
+    p_reason: 'stripe_purchase',
+    p_metadata: {
       price_id: session.metadata?.price_id ?? null,
       plan_label: session.metadata?.plan_label ?? null,
       session_id: session.id ?? null,
     },
+    p_stripe_customer_id: stripeCustomerId,
   })
 
-  if (eventError) {
-    return jsonResponse({ error: eventError.message }, 500)
+  if (rpcError) {
+    const message = rpcError.message ?? 'Failed to grant tickets.'
+    if (message.includes('INVALID')) {
+      return jsonResponse({ error: message }, 400)
+    }
+    return jsonResponse({ error: message }, 500)
+  }
+
+  const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
+  if (result?.already_processed) {
+    return jsonResponse({ received: true, duplicate: true })
   }
 
   return jsonResponse({ received: true })

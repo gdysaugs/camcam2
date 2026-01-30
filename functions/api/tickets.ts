@@ -1,4 +1,5 @@
 import { createClient, type User } from '@supabase/supabase-js'
+import { buildCorsHeaders, isCorsBlocked } from '../_shared/cors'
 
 type Env = {
   SUPABASE_URL?: string
@@ -7,16 +8,12 @@ type Env = {
 
 const SIGNUP_TICKET_GRANT = 3
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-}
+const corsMethods = 'GET, OPTIONS'
 
-const jsonResponse = (body: unknown, status = 200) =>
+const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    headers: { ...headers, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   })
 
 const extractBearerToken = (request: Request) => {
@@ -119,43 +116,54 @@ const isGoogleUser = (user: User) => {
   return false
 }
 
-const requireGoogleUser = async (request: Request, env: Env) => {
+const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401) }
+    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
-    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500) }
+    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500, corsHeaders) }
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401) }
+    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403) }
+    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
 
-export const onRequestOptions: PagesFunction = async () => new Response(null, { headers: corsHeaders })
+export const onRequestOptions: PagesFunction<Env> = async ({ request, env }) => {
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+  return new Response(null, { headers: corsHeaders })
+}
 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireGoogleUser(request, env)
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+
+  const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
     return auth.response
   }
 
   const email = auth.user.email
   if (!email) {
-    return jsonResponse({ error: 'メールアドレスが取得できません。' }, 400)
+    return jsonResponse({ error: 'メールアドレスが取得できません。' }, 400, corsHeaders)
   }
 
   const { data, error } = await ensureTicketRow(auth.admin, auth.user)
 
   if (error) {
-    return jsonResponse({ error: error.message }, 500)
+    return jsonResponse({ error: error.message }, 500, corsHeaders)
   }
 
-  return jsonResponse({ tickets: data?.tickets ?? 0, hasRecord: Boolean(data) })
+  return jsonResponse({ tickets: data?.tickets ?? 0, hasRecord: Boolean(data) }, 200, corsHeaders)
 }

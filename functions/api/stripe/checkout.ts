@@ -1,4 +1,5 @@
 import { createClient, type User } from '@supabase/supabase-js'
+import { buildCorsHeaders, isCorsBlocked } from '../../_shared/cors'
 
 type Env = {
   SUPABASE_URL?: string
@@ -8,16 +9,12 @@ type Env = {
   STRIPE_CANCEL_URL?: string
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-}
+const corsMethods = 'POST, OPTIONS'
 
-const jsonResponse = (body: unknown, status = 200) =>
+const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
   })
 
 const extractBearerToken = (request: Request) => {
@@ -43,21 +40,21 @@ const isGoogleUser = (user: User) => {
   return false
 }
 
-const requireGoogleUser = async (request: Request, env: Env) => {
+const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401) }
+    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
-    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500) }
+    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500, corsHeaders) }
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401) }
+    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403) }
+    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -71,28 +68,39 @@ const PRICE_MAP = new Map([
 const getRedirectUrl = (env: Env, request: Request, key: 'STRIPE_SUCCESS_URL' | 'STRIPE_CANCEL_URL', fallback: string) =>
   env[key] ?? new URL(fallback, request.url).toString()
 
-export const onRequestOptions: PagesFunction = async () => new Response(null, { headers: corsHeaders })
+export const onRequestOptions: PagesFunction<Env> = async ({ request, env }) => {
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+  return new Response(null, { headers: corsHeaders })
+}
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const auth = await requireGoogleUser(request, env)
+  const corsHeaders = buildCorsHeaders(request, env, corsMethods)
+  if (isCorsBlocked(request, env)) {
+    return new Response(null, { status: 403, headers: corsHeaders })
+  }
+
+  const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
     return auth.response
   }
 
   const stripeKey = env.STRIPE_SECRET_KEY
   if (!stripeKey) {
-    return jsonResponse({ error: 'STRIPE_SECRET_KEY is not set.' }, 500)
+    return jsonResponse({ error: 'STRIPE_SECRET_KEY is not set.' }, 500, corsHeaders)
   }
 
   const payload = await request.json().catch(() => null)
   if (!payload) {
-    return jsonResponse({ error: 'Invalid request body.' }, 400)
+    return jsonResponse({ error: 'Invalid request body.' }, 400, corsHeaders)
   }
 
   const priceId = String(payload.price_id ?? payload.priceId ?? '')
   const plan = PRICE_MAP.get(priceId)
   if (!plan) {
-    return jsonResponse({ error: '不正なプランです。' }, 400)
+    return jsonResponse({ error: '不正なプランです。' }, 400, corsHeaders)
   }
 
   const email = auth.user.email ?? ''
@@ -127,8 +135,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const stripeText = await stripeRes.text()
   const stripeData = stripeText ? JSON.parse(stripeText) : null
   if (!stripeRes.ok) {
-    return jsonResponse({ error: stripeData?.error?.message || 'Stripeのセッション作成に失敗しました。' }, 500)
+    return jsonResponse({ error: stripeData?.error?.message || 'Stripeのセッション作成に失敗しました。' }, 500, corsHeaders)
   }
 
-  return jsonResponse({ url: stripeData?.url })
+  return jsonResponse({ url: stripeData?.url }, 200, corsHeaders)
 }
