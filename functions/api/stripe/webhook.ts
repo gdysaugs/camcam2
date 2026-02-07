@@ -7,10 +7,10 @@ type Env = {
 }
 
 const ANIMONE_PRICE_IDS = new Set([
-  'price_1SxlHuA0Q3zk5h1IlqXtP7tl',
-  'price_1SxlJaA0Q3zk5h1INNQoZCdG',
-  'price_1SxlKbA0Q3zk5h1IP2SZAIY7',
-  'price_1SxlKpA0Q3zk5h1IZLRtKGg2',
+  'price_1Sy5N6Abw0uHQjne0Q6aV0M1', // Starter
+  'price_1Sy5QbAbw0uHQjne0wydR1AG', // Basic
+  'price_1Sy5QqAbw0uHQjneTnEIOCFx', // Plus
+  'price_1Sy5R3Abw0uHQjnekmxX7Q5n', // Pro
 ])
 
 const corsHeaders = {
