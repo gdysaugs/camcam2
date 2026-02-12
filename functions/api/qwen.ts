@@ -6,6 +6,7 @@ import { isUnderageImage } from '../_shared/rekognition'
 
 type Env = {
   RUNPOD_API_KEY: string
+  RUNPOD_QWEN_ENDPOINT_URL?: string
   RUNPOD_ENDPOINT_URL?: string
   COMFY_ORG_API_KEY?: string
   RUNPOD_WORKER_MODE?: string
@@ -24,7 +25,22 @@ const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
     headers: { ...headers, 'Content-Type': 'application/json' },
   })
 
-const resolveEndpoint = (env: Env) => env.RUNPOD_ENDPOINT_URL?.replace(/\/$/, '')
+const normalizeEndpoint = (value?: string) => {
+  if (!value) return ''
+  const trimmed = value.trim().replace(/^['"]|['"]$/g, '')
+  if (!trimmed) return ''
+  const normalized = trimmed.replace(/\/+$/, '')
+  try {
+    const parsed = new URL(normalized)
+    if (!/^https?:$/.test(parsed.protocol)) return ''
+    return normalized
+  } catch {
+    return ''
+  }
+}
+
+const resolveEndpoint = (env: Env) =>
+  normalizeEndpoint(env.RUNPOD_QWEN_ENDPOINT_URL) || normalizeEndpoint(env.RUNPOD_ENDPOINT_URL)
 
 type NodeMapEntry = {
   id: string
@@ -524,6 +540,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   if (isCorsBlocked(request, env)) {
     return new Response(null, { status: 403, headers: corsHeaders })
   }
+  try {
 
   const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
@@ -545,11 +562,27 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500, corsHeaders)
+    return jsonResponse(
+      { error: 'RUNPOD_QWEN_ENDPOINT_URL or RUNPOD_ENDPOINT_URL is invalid or missing.' },
+      500,
+      corsHeaders,
+    )
   }
-  const upstream = await fetch(`${endpoint}/status/${encodeURIComponent(id)}`, {
-    headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
-  })
+  let upstream: Response
+  try {
+    upstream = await fetch(`${endpoint}/status/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
+    })
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: 'RunPod status request failed.',
+        detail: error instanceof Error ? error.message : 'unknown_error',
+      },
+      502,
+      corsHeaders,
+    )
+  }
   const raw = await upstream.text()
   let payload: any = null
   let ticketsLeft: number | null = null
@@ -583,6 +616,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     status: upstream.status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: 'Unexpected error in qwen status.',
+        detail: error instanceof Error ? error.message : 'unknown_error',
+      },
+      500,
+      corsHeaders,
+    )
+  }
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
@@ -590,6 +633,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (isCorsBlocked(request, env)) {
     return new Response(null, { status: 403, headers: corsHeaders })
   }
+  try {
 
   const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) {
@@ -602,7 +646,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_ENDPOINT_URL is not set.' }, 500, corsHeaders)
+    return jsonResponse(
+      { error: 'RUNPOD_QWEN_ENDPOINT_URL or RUNPOD_ENDPOINT_URL is invalid or missing.' },
+      500,
+      corsHeaders,
+    )
   }
 
   const payload = await request.json().catch(() => null)
@@ -774,7 +822,31 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       height,
       angle_strength: angleStrength,
     }
-    applyNodeMap(workflow as Record<string, any>, nodeMap as NodeMap, nodeValues)
+    try {
+      applyNodeMap(workflow as Record<string, any>, nodeMap as NodeMap, nodeValues)
+    } catch (error) {
+      const refundResult = await refundTicket(
+        auth.admin,
+        auth.user,
+        { ...ticketMetaWithUsage, reason: 'workflow_apply_failed' },
+        usageId,
+        corsHeaders,
+      )
+      const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+      if (Number.isFinite(nextTickets)) {
+        ticketsLeft = nextTickets
+      }
+      return jsonResponse(
+        {
+          error: 'Workflow node mapping failed.',
+          detail: error instanceof Error ? error.message : 'unknown_error',
+          usage_id: usageId,
+          ticketsLeft,
+        },
+        400,
+        corsHeaders,
+      )
+    }
 
     const comfyKey = String(env.COMFY_ORG_API_KEY ?? '')
     const images = [{ name: imageName, image: imageBase64 }]
@@ -789,14 +861,39 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       runpodInput.comfy_org_api_key = comfyKey
     }
 
-    const upstream = await fetch(`${endpoint}/run`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.RUNPOD_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ input: runpodInput }),
-    })
+    let upstream: Response
+    try {
+      upstream = await fetch(`${endpoint}/run`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.RUNPOD_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ input: runpodInput }),
+      })
+    } catch (error) {
+      const refundResult = await refundTicket(
+        auth.admin,
+        auth.user,
+        { ...ticketMetaWithUsage, reason: 'network_error' },
+        usageId,
+        corsHeaders,
+      )
+      const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+      if (Number.isFinite(nextTickets)) {
+        ticketsLeft = nextTickets
+      }
+      return jsonResponse(
+        {
+          error: 'RunPod request failed.',
+          detail: error instanceof Error ? error.message : 'unknown_error',
+          usage_id: usageId,
+          ticketsLeft,
+        },
+        502,
+        corsHeaders,
+      )
+    }
     const raw = await upstream.text()
     let upstreamPayload: any = null
     try {
@@ -867,14 +964,39 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     runpodInput.distance = input?.distance
   }
 
-  const upstream = await fetch(`${endpoint}/run`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.RUNPOD_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ input: runpodInput }),
-  })
+  let upstream: Response
+  try {
+    upstream = await fetch(`${endpoint}/run`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RUNPOD_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: runpodInput }),
+    })
+  } catch (error) {
+    const refundResult = await refundTicket(
+      auth.admin,
+      auth.user,
+      { ...ticketMetaWithUsage, reason: 'network_error' },
+      usageId,
+      corsHeaders,
+    )
+    const nextTickets = Number((refundResult as { ticketsLeft?: unknown }).ticketsLeft)
+    if (Number.isFinite(nextTickets)) {
+      ticketsLeft = nextTickets
+    }
+    return jsonResponse(
+      {
+        error: 'RunPod request failed.',
+        detail: error instanceof Error ? error.message : 'unknown_error',
+        usage_id: usageId,
+        ticketsLeft,
+      },
+      502,
+      corsHeaders,
+    )
+  }
   const raw = await upstream.text()
   let upstreamPayload: any = null
   try {
@@ -918,5 +1040,15 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     upstreamPayload.ticketsLeft = ticketsLeft
   }
   return jsonResponse(upstreamPayload, upstream.status, corsHeaders)
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: 'Unexpected error in qwen run.',
+        detail: error instanceof Error ? error.message : 'unknown_error',
+      },
+      500,
+      corsHeaders,
+    )
+  }
 }
 
