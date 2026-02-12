@@ -5,26 +5,30 @@ type GuestIntroProps = {
 
 const ASSETS = {
   logo: '/media/animone-logo.webp',
-  headlineArt: '/media/fox-ai-banner.png',
-  videos: [
-    '/media/animone-showcase-1.mp4',
-    '/media/animone-showcase-2.mp4',
-    '/media/animone-showcase-3.mp4',
-    '/media/animone-showcase-4.mp4',
-    '/media/animone-showcase-5.mp4',
-    '/media/animone-showcase-6.mp4',
-  ],
+  headlineArt: '/media/fox-ai-banner-2.png',
+  howToSource: '/media/howto-source.jpg',
+  howToResult: '/media/howto-result.mp4',
 }
 
 export function GuestIntro({ mode: _mode, onSignIn }: GuestIntroProps) {
   return (
     <div className="guest-shell guest-shell--media">
       <section className="guest-headline">
+        <p className="guest-headline__overlay">AIですべての画像を動画に</p>
         <img className="guest-headline__art" src={ASSETS.headlineArt} alt="FOX AI" />
+        <div className="guest-headline__quick">
+          <span>画像から画像</span>
+          <span>画像から動画</span>
+          <span>登録無料</span>
+        </div>
       </section>
 
       <section className="guest-minimal">
-        <p>ユーザー登録で3回無料生成</p>
+        <p>今だけユーザー登録で3回無料生成</p>
+        <div className="guest-promo">
+          <span>世界最先端のAIエンジン搭載</span>
+          <span>ユーザー満足度97%</span>
+        </div>
         <div className="guest-cta guest-cta--center">
           <button type="button" className="primary-button primary-button--shimmer" onClick={onSignIn}>
             登録 / ログイン
@@ -32,13 +36,24 @@ export function GuestIntro({ mode: _mode, onSignIn }: GuestIntroProps) {
         </div>
       </section>
 
-      <section className="guest-gallery">
-        <div className="guest-gallery__grid">
-          {ASSETS.videos.map((src, index) => (
-            <div className="guest-gallery__item" key={`${src}-${index}`}>
-              <video className="guest-gallery__video" src={src} autoPlay loop muted playsInline preload="metadata" />
-            </div>
-          ))}
+      <section className="guest-howto">
+        <div className="guest-howto__header">
+          <h2>使い方</h2>
+          <p>画像1枚とプロンプトだけで、すぐに動画化。</p>
+        </div>
+        <div className="guest-howto__flow">
+          <div className="guest-howto__card">
+            <p className="guest-howto__label">元画像</p>
+            <img src={ASSETS.howToSource} alt="元画像サンプル" loading="lazy" />
+          </div>
+          <div className="guest-howto__card guest-howto__card--prompt">
+            <p className="guest-howto__label">入力プロンプト</p>
+            <p className="guest-howto__prompt">女性が笑顔で手を振る</p>
+          </div>
+          <div className="guest-howto__card">
+            <p className="guest-howto__label">生成結果</p>
+            <video src={ASSETS.howToResult} autoPlay loop muted playsInline preload="metadata" />
+          </div>
         </div>
       </section>
 
