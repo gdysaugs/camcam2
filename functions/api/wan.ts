@@ -1,4 +1,4 @@
-import workflowI2VTemplate from './wan-workflow-i2v.json'
+﻿import workflowI2VTemplate from './wan-workflow-i2v.json'
 import workflowT2VTemplate from './wan-workflow-t2v.json'
 import nodeMapI2VTemplate from './wan-node-map-i2v.json'
 import nodeMapT2VTemplate from './wan-node-map-t2v.json'
@@ -64,8 +64,10 @@ const MAX_CFG = 10
 const FIXED_FPS = 12
 const FIXED_SECONDS = 5
 const FIXED_FRAMES = FIXED_FPS * FIXED_SECONDS
+const INTERNAL_SERVER_ERROR_MESSAGE = '\u30b5\u30fc\u30d0\u30fc\u5185\u90e8\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u6642\u9593\u3092\u304a\u3044\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
+const INTERNAL_ERROR_DETAIL = 'internal_error'
 const UNDERAGE_BLOCK_MESSAGE =
-  'この画像には暴力的な表現、低年齢、または規約違反の可能性があります。別の画像でお試しください。'
+  '縺薙・逕ｻ蜒上↓縺ｯ證ｴ蜉帷噪縺ｪ陦ｨ迴ｾ縲∽ｽ主ｹｴ鮨｢縲√∪縺溘・隕冗ｴ・＆蜿阪・蜿ｯ閭ｽ諤ｧ縺後≠繧翫∪縺吶ょ挨縺ｮ逕ｻ蜒上〒縺願ｩｦ縺励￥縺縺輔＞縲・
 const getWorkflowTemplate = async (mode: 'i2v' | 't2v') =>
   (mode === 't2v' ? workflowT2VTemplate : workflowI2VTemplate) as Record<string, unknown>
 
@@ -100,13 +102,13 @@ const isGoogleUser = (user: User) => {
 const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: '繝ｭ繧ｰ繧､繝ｳ縺悟ｿ・ｦ√〒縺吶・ }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
     return {
       response: jsonResponse(
-        { error: 'SUPABASE_URL または SUPABASE_SERVICE_ROLE_KEY が設定されていません。' },
+        { error: 'SUPABASE_URL 縺ｾ縺溘・ SUPABASE_SERVICE_ROLE_KEY 縺瑚ｨｭ螳壹＆繧後※縺・∪縺帙ｓ縲・ },
         500,
         corsHeaders,
       ),
@@ -114,10 +116,10 @@ const requireGoogleUser = async (request: Request, env: Env, corsHeaders: Header
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: '隱崎ｨｼ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Googleログインのみ対応しています。' }, 403, corsHeaders) }
+    return { response: jsonResponse({ error: 'Google繝ｭ繧ｰ繧､繝ｳ縺ｮ縺ｿ蟇ｾ蠢懊＠縺ｦ縺・∪縺吶・ }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -217,7 +219,7 @@ const ensureTicketAvailable = async (
   const { data: existing, error } = await ensureTicketRow(admin, user)
 
   if (error) {
-    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   if (!existing) {
@@ -252,7 +254,7 @@ const consumeTicket = async (
   const { data: existing, error } = await fetchTicketRow(admin, user)
 
   if (error) {
-    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   if (!existing) {
@@ -280,7 +282,7 @@ const consumeTicket = async (
     if (message.includes('INVALID')) {
       return { response: jsonResponse({ error: 'Invalid ticket request.' }, 400, corsHeaders) }
     }
-    return { response: jsonResponse({ error: message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
@@ -313,7 +315,7 @@ const refundTicket = async (
     .maybeSingle()
 
   if (chargeError) {
-    return { response: jsonResponse({ error: chargeError.message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   if (!chargeEvent) {
@@ -328,7 +330,7 @@ const refundTicket = async (
     .maybeSingle()
 
   if (refundCheckError) {
-    return { response: jsonResponse({ error: refundCheckError.message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   if (existingRefund) {
@@ -338,7 +340,7 @@ const refundTicket = async (
   const { data: existing, error } = await ensureTicketRow(admin, user)
 
   if (error) {
-    return { response: jsonResponse({ error: error.message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   if (!existing) {
@@ -362,7 +364,7 @@ const refundTicket = async (
     if (message.includes('INVALID')) {
       return { response: jsonResponse({ error: 'Invalid ticket request.' }, 400, corsHeaders) }
     }
-    return { response: jsonResponse({ error: message }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
   }
 
   const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
@@ -518,7 +520,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const url = new URL(request.url)
   const id = url.searchParams.get('id')
   if (!id) {
-    return jsonResponse({ error: 'idが必要です。' }, 400, corsHeaders)
+    return jsonResponse({ error: 'id縺悟ｿ・ｦ√〒縺吶・ }, 400, corsHeaders)
   }
   if (!env.RUNPOD_API_KEY) {
     return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
@@ -624,7 +626,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const isT2V = mode === 't2v'
   const imageValue = input?.image_base64 ?? input?.image ?? input?.image_url
   if (!isT2V && !imageValue) {
-    return jsonResponse({ error: 'i2vには画像が必要です。' }, 400, corsHeaders)
+    return jsonResponse({ error: 'i2v縺ｫ縺ｯ逕ｻ蜒上′蠢・ｦ√〒縺吶・ }, 400, corsHeaders)
   }
 
   let imageBase64 = ''
@@ -637,7 +639,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     }
   } catch (error) {
     return jsonResponse(
-      { error: error instanceof Error ? error.message : '画像の読み取りに失敗しました。' },
+      { error: error instanceof Error ? error.message : '逕ｻ蜒上・隱ｭ縺ｿ蜿悶ｊ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ },
       400,
       corsHeaders,
     )
@@ -654,7 +656,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       }
     } catch (error) {
       return jsonResponse(
-        { error: error instanceof Error ? error.message : 'Age verification failed.' },
+        { error: INTERNAL_SERVER_ERROR_MESSAGE },
         500,
         corsHeaders,
       )
@@ -819,4 +821,5 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 }
+
 

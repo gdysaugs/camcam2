@@ -1,4 +1,4 @@
-import { createClient, type User } from '@supabase/supabase-js'
+﻿import { createClient, type User } from '@supabase/supabase-js'
 import { buildCorsHeaders, isCorsBlocked } from '../_shared/cors'
 
 type Env = {
@@ -9,6 +9,8 @@ type Env = {
 const SIGNUP_TICKET_GRANT = 3
 
 const corsMethods = 'GET, OPTIONS'
+
+const INTERNAL_SERVER_ERROR_MESSAGE = '\u30b5\u30fc\u30d0\u30fc\u5185\u90e8\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u6642\u9593\u3092\u304a\u3044\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 
 const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), {
@@ -119,7 +121,7 @@ const isGoogleUser = (user: User) => {
 const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: 'ログインが必要です。' }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: '繝ｭ繧ｰ繧､繝ｳ縺悟ｿ・ｦ√〒縺吶・ }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
@@ -127,10 +129,10 @@ const requireGoogleUser = async (request: Request, env: Env, corsHeaders: Header
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '認証に失敗しました。' }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: '隱崎ｨｼ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Googleログインのみ利用できます。' }, 403, corsHeaders) }
+    return { response: jsonResponse({ error: 'Google繝ｭ繧ｰ繧､繝ｳ縺ｮ縺ｿ蛻ｩ逕ｨ縺ｧ縺阪∪縺吶・ }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -156,14 +158,15 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const email = auth.user.email
   if (!email) {
-    return jsonResponse({ error: 'メールアドレスが取得できません。' }, 400, corsHeaders)
+    return jsonResponse({ error: '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺悟叙蠕励〒縺阪∪縺帙ｓ縲・ }, 400, corsHeaders)
   }
 
   const { data, error } = await ensureTicketRow(auth.admin, auth.user)
 
   if (error) {
-    return jsonResponse({ error: error.message }, 500, corsHeaders)
+    return jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders)
   }
 
   return jsonResponse({ tickets: data?.tickets ?? 0, hasRecord: Boolean(data) }, 200, corsHeaders)
 }
+
