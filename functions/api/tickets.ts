@@ -11,6 +11,12 @@ const SIGNUP_TICKET_GRANT = 3
 const corsMethods = 'GET, OPTIONS'
 
 const INTERNAL_SERVER_ERROR_MESSAGE = '\u30b5\u30fc\u30d0\u30fc\u5185\u90e8\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u6642\u9593\u3092\u304a\u3044\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
+const ERROR_LOGIN_REQUIRED = '\u30ed\u30b0\u30a4\u30f3\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_AUTH_FAILED = '\u8a8d\u8a3c\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002'
+const ERROR_GOOGLE_ONLY = 'Google\u30ed\u30b0\u30a4\u30f3\u306e\u307f\u5bfe\u5fdc\u3057\u3066\u3044\u307e\u3059\u3002'
+const ERROR_SUPABASE_NOT_SET =
+  'SUPABASE_URL \u307e\u305f\u306f SUPABASE_SERVICE_ROLE_KEY \u304c\u8a2d\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002'
+const ERROR_EMAIL_MISSING = '\u30e1\u30fc\u30eb\u30a2\u30c9\u30ec\u30b9\u304c\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3002'
 
 const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), {
@@ -121,18 +127,18 @@ const isGoogleUser = (user: User) => {
 const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: '繝ｭ繧ｰ繧､繝ｳ縺悟ｿ・ｦ√〒縺吶・ }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_LOGIN_REQUIRED }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
-    return { response: jsonResponse({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set.' }, 500, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_SUPABASE_NOT_SET }, 500, corsHeaders) }
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '隱崎ｨｼ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_AUTH_FAILED }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Google繝ｭ繧ｰ繧､繝ｳ縺ｮ縺ｿ蛻ｩ逕ｨ縺ｧ縺阪∪縺吶・ }, 403, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_GOOGLE_ONLY }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -158,7 +164,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const email = auth.user.email
   if (!email) {
-    return jsonResponse({ error: '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺悟叙蠕励〒縺阪∪縺帙ｓ縲・ }, 400, corsHeaders)
+    return jsonResponse({ error: ERROR_EMAIL_MISSING }, 400, corsHeaders)
   }
 
   const { data, error } = await ensureTicketRow(auth.admin, auth.user)

@@ -66,8 +66,17 @@ const FIXED_SECONDS = 5
 const FIXED_FRAMES = FIXED_FPS * FIXED_SECONDS
 const INTERNAL_SERVER_ERROR_MESSAGE = '\u30b5\u30fc\u30d0\u30fc\u5185\u90e8\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u6642\u9593\u3092\u304a\u3044\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const INTERNAL_ERROR_DETAIL = 'internal_error'
+const ERROR_LOGIN_REQUIRED = '\u30ed\u30b0\u30a4\u30f3\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_AUTH_FAILED = '\u8a8d\u8a3c\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002'
+const ERROR_GOOGLE_ONLY = 'Google\u30ed\u30b0\u30a4\u30f3\u306e\u307f\u5bfe\u5fdc\u3057\u3066\u3044\u307e\u3059\u3002'
+const ERROR_SUPABASE_NOT_SET =
+  'SUPABASE_URL \u307e\u305f\u306f SUPABASE_SERVICE_ROLE_KEY \u304c\u8a2d\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002'
+const ERROR_ID_REQUIRED = 'id\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_I2V_IMAGE_REQUIRED = 'i2v\u306b\u306f\u753b\u50cf\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_IMAGE_READ_FAILED =
+  '\u753b\u50cf\u306e\u8aad\u307f\u53d6\u308a\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u753b\u50cf\u3092\u78ba\u8a8d\u3057\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const UNDERAGE_BLOCK_MESSAGE =
-  '縺薙・逕ｻ蜒上↓縺ｯ證ｴ蜉帷噪縺ｪ陦ｨ迴ｾ縲∽ｽ主ｹｴ鮨｢縲√∪縺溘・隕冗ｴ・＆蜿阪・蜿ｯ閭ｽ諤ｧ縺後≠繧翫∪縺吶ょ挨縺ｮ逕ｻ蜒上〒縺願ｩｦ縺励￥縺縺輔＞縲・
+  '\u3053\u306e\u753b\u50cf\u306b\u306f\u66b4\u529b\u7684\u306a\u8868\u73fe\u3001\u4f4e\u5e74\u9f62\u3001\u307e\u305f\u306f\u898f\u7d04\u9055\u53cd\u306e\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\u5225\u306e\u753b\u50cf\u3067\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const getWorkflowTemplate = async (mode: 'i2v' | 't2v') =>
   (mode === 't2v' ? workflowT2VTemplate : workflowI2VTemplate) as Record<string, unknown>
 
@@ -102,24 +111,18 @@ const isGoogleUser = (user: User) => {
 const requireGoogleUser = async (request: Request, env: Env, corsHeaders: HeadersInit) => {
   const token = extractBearerToken(request)
   if (!token) {
-    return { response: jsonResponse({ error: '繝ｭ繧ｰ繧､繝ｳ縺悟ｿ・ｦ√〒縺吶・ }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_LOGIN_REQUIRED }, 401, corsHeaders) }
   }
   const admin = getSupabaseAdmin(env)
   if (!admin) {
-    return {
-      response: jsonResponse(
-        { error: 'SUPABASE_URL 縺ｾ縺溘・ SUPABASE_SERVICE_ROLE_KEY 縺瑚ｨｭ螳壹＆繧後※縺・∪縺帙ｓ縲・ },
-        500,
-        corsHeaders,
-      ),
-    }
+    return { response: jsonResponse({ error: ERROR_SUPABASE_NOT_SET }, 500, corsHeaders) }
   }
   const { data, error } = await admin.auth.getUser(token)
   if (error || !data?.user) {
-    return { response: jsonResponse({ error: '隱崎ｨｼ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ }, 401, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_AUTH_FAILED }, 401, corsHeaders) }
   }
   if (!isGoogleUser(data.user)) {
-    return { response: jsonResponse({ error: 'Google繝ｭ繧ｰ繧､繝ｳ縺ｮ縺ｿ蟇ｾ蠢懊＠縺ｦ縺・∪縺吶・ }, 403, corsHeaders) }
+    return { response: jsonResponse({ error: ERROR_GOOGLE_ONLY }, 403, corsHeaders) }
   }
   return { admin, user: data.user }
 }
@@ -520,7 +523,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const url = new URL(request.url)
   const id = url.searchParams.get('id')
   if (!id) {
-    return jsonResponse({ error: 'id縺悟ｿ・ｦ√〒縺吶・ }, 400, corsHeaders)
+    return jsonResponse({ error: ERROR_ID_REQUIRED }, 400, corsHeaders)
   }
   if (!env.RUNPOD_API_KEY) {
     return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
@@ -626,7 +629,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const isT2V = mode === 't2v'
   const imageValue = input?.image_base64 ?? input?.image ?? input?.image_url
   if (!isT2V && !imageValue) {
-    return jsonResponse({ error: 'i2v縺ｫ縺ｯ逕ｻ蜒上′蠢・ｦ√〒縺吶・ }, 400, corsHeaders)
+    return jsonResponse({ error: ERROR_I2V_IMAGE_REQUIRED }, 400, corsHeaders)
   }
 
   let imageBase64 = ''
@@ -639,7 +642,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     }
   } catch (error) {
     return jsonResponse(
-      { error: error instanceof Error ? error.message : '逕ｻ蜒上・隱ｭ縺ｿ蜿悶ｊ縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・ },
+      { error: ERROR_IMAGE_READ_FAILED },
       400,
       corsHeaders,
     )
