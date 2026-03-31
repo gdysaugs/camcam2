@@ -511,6 +511,13 @@ body {
   object-fit: cover;
 }
 
+.preview-card video {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+}
+
 .preview-card__remove {
   position: absolute;
   top: 10px;

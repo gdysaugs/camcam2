@@ -1,5 +1,10 @@
 import { onRequestGet as qwenGet, onRequestPost as qwenPost, onRequestOptions as qwenOptions } from '../functions/api/qwen'
 import { onRequestGet as wanGet, onRequestPost as wanPost, onRequestOptions as wanOptions } from '../functions/api/wan'
+import {
+  onRequestGet as mmaudioGet,
+  onRequestPost as mmaudioPost,
+  onRequestOptions as mmaudioOptions,
+} from '../functions/api/mmaudio'
 import { onRequestGet as ticketsGet, onRequestOptions as ticketsOptions } from '../functions/api/tickets'
 import { onRequestPost as stripeCheckoutPost, onRequestOptions as stripeCheckoutOptions } from '../functions/api/stripe/checkout'
 import { onRequestPost as stripeWebhookPost, onRequestOptions as stripeWebhookOptions } from '../functions/api/stripe/webhook'
@@ -7,6 +12,7 @@ import { onRequestPost as stripeWebhookPost, onRequestOptions as stripeWebhookOp
 type Env = {
   RUNPOD_API_KEY: string
   RUNPOD_ENDPOINT_URL?: string
+  RUNPOD_MMAUDIO_ENDPOINT_URL?: string
   RUNPOD_WAN_ENDPOINT_URL?: string
   COMFY_ORG_API_KEY?: string
   RUNPOD_WORKER_MODE?: string
@@ -45,6 +51,13 @@ export default {
       if (method === 'OPTIONS') return wanOptions(args as any)
       if (method === 'GET') return wanGet(args as any)
       if (method === 'POST') return wanPost(args as any)
+      return methodNotAllowed()
+    }
+
+    if (path.startsWith('/api/mmaudio')) {
+      if (method === 'OPTIONS') return mmaudioOptions(args as any)
+      if (method === 'GET') return mmaudioGet(args as any)
+      if (method === 'POST') return mmaudioPost(args as any)
       return methodNotAllowed()
     }
 
