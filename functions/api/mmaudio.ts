@@ -19,7 +19,7 @@ const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   })
 
 const resolveEndpoint = (env: Env) =>
-  (env.RUNPOD_MMAUDIO_ENDPOINT_URL ?? env.RUNPOD_ENDPOINT_URL ?? DEFAULT_MMAUDIO_ENDPOINT)?.replace(/\/$/, '')
+  (env.RUNPOD_MMAUDIO_ENDPOINT_URL ?? DEFAULT_MMAUDIO_ENDPOINT)?.replace(/\/$/, '')
 
 const SIGNUP_TICKET_GRANT = 3
 const VIDEO_TICKET_COST = 1
