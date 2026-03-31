@@ -16,9 +16,6 @@ export function TopNav() {
         <NavLink to="/image" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
           I2I
         </NavLink>
-        <NavLink to="/sfx" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
-          SFX
-        </NavLink>
         <NavLink to="/purchase" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
           トークン
         </NavLink>

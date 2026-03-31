@@ -3,7 +3,6 @@ import { Account } from './pages/Account'
 import { Camera } from './pages/Camera'
 import { Image } from './pages/Image'
 import { Purchase } from './pages/Purchase'
-import { Sfx } from './pages/Sfx'
 import { Video } from './pages/Video'
 
 export function App() {
@@ -11,7 +10,6 @@ export function App() {
     <Routes>
       <Route path="/" element={<Camera />} />
       <Route path="/image" element={<Image />} />
-      <Route path="/sfx" element={<Sfx />} />
       <Route path="/purchase" element={<Purchase />} />
       <Route path="/video" element={<Video />} />
       <Route path="/account" element={<Account />} />
