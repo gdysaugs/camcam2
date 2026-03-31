@@ -353,6 +353,7 @@ export function Sfx() {
   )
 
   const pollJob = useCallback(async (jobId: string, usageId: string, runId: number, token?: string) => {
+    let notFoundCount = 0
     for (let i = 0; i < 180; i += 1) {
       if (runIdRef.current !== runId) return { status: 'cancelled' as const, videos: [] as string[] }
       const headers: Record<string, string> = {}
@@ -363,6 +364,13 @@ export function Sfx() {
       )
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
+        if (res.status === 404) {
+          notFoundCount += 1
+          if (notFoundCount <= 20) {
+            await wait(1200 + i * 50)
+            continue
+          }
+        }
         const rawMessage = data?.error || data?.message || data?.detail || 'Failed to poll status.'
         const message = normalizeErrorMessage(rawMessage)
         if (isTicketShortage(res.status, message)) {
@@ -373,6 +381,7 @@ export function Sfx() {
         setErrorModalMessage(message)
         throw new Error(message)
       }
+      notFoundCount = 0
       const nextTickets = Number(data?.ticketsLeft ?? data?.tickets_left)
       if (Number.isFinite(nextTickets)) setTicketCount(nextTickets)
       const status = String(data?.status || data?.state || '').toLowerCase()
