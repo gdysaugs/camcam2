@@ -1,5 +1,6 @@
 import { onRequestGet as qwenGet, onRequestPost as qwenPost, onRequestOptions as qwenOptions } from '../functions/api/qwen'
 import { onRequestGet as wanGet, onRequestPost as wanPost, onRequestOptions as wanOptions } from '../functions/api/wan'
+import { onRequestGet as wanLongGet, onRequestPost as wanLongPost, onRequestOptions as wanLongOptions } from '../functions/api/wan-long'
 import { onRequestGet as ticketsGet, onRequestOptions as ticketsOptions } from '../functions/api/tickets'
 import { onRequestPost as stripeCheckoutPost, onRequestOptions as stripeCheckoutOptions } from '../functions/api/stripe/checkout'
 import { onRequestPost as stripeWebhookPost, onRequestOptions as stripeWebhookOptions } from '../functions/api/stripe/webhook'
@@ -8,6 +9,7 @@ type Env = {
   RUNPOD_API_KEY: string
   RUNPOD_ENDPOINT_URL?: string
   RUNPOD_WAN_ENDPOINT_URL?: string
+  RUNPOD_WAN_LONG_API_KEY?: string
   COMFY_ORG_API_KEY?: string
   RUNPOD_WORKER_MODE?: string
   SUPABASE_URL?: string
@@ -38,6 +40,13 @@ export default {
       if (method === 'OPTIONS') return qwenOptions(args as any)
       if (method === 'GET') return qwenGet(args as any)
       if (method === 'POST') return qwenPost(args as any)
+      return methodNotAllowed()
+    }
+
+    if (path.startsWith('/api/wan-long')) {
+      if (method === 'OPTIONS') return wanLongOptions(args as any)
+      if (method === 'GET') return wanLongGet(args as any)
+      if (method === 'POST') return wanLongPost(args as any)
       return methodNotAllowed()
     }
 

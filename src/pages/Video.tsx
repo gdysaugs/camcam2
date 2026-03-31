@@ -22,13 +22,16 @@ type RenderResult = {
 }
 
 const MAX_PARALLEL = 1
-const API_ENDPOINT = '/api/wan'
+const API_ENDPOINT = '/api/wan-long'
 const FIXED_FPS = 10
-const FIXED_SECONDS = 5
+const SHORT_SECONDS = 5
+const LONG_SECONDS = 10
 const FIXED_STEPS = 4
 const FIXED_CFG = 1
-const FIXED_FRAME_COUNT = FIXED_FPS * FIXED_SECONDS
-const VIDEO_TICKET_COST = 1
+const SHORT_FRAME_COUNT = 53
+const LONG_FRAME_COUNT = 101
+const SHORT_VIDEO_TICKET_COST = 1
+const LONG_VIDEO_TICKET_COST = 2
 const OAUTH_REDIRECT_URL =
   import.meta.env.VITE_SUPABASE_REDIRECT_URL ?? (typeof window !== 'undefined' ? window.location.origin : undefined)
 
@@ -275,6 +278,7 @@ export function Video() {
   const [results, setResults] = useState<RenderResult[]>([])
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)
+  const [isLongMode, setIsLongMode] = useState(false)
   const [step, setStep] = useState(0)
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(!supabase)
@@ -300,6 +304,9 @@ export function Video() {
     '任意: 避けたい内容を入力します。',
     '利用規約に同意して内容を確認して生成します。',
   ] as const
+  const activeSeconds = isLongMode ? LONG_SECONDS : SHORT_SECONDS
+  const activeFrameCount = isLongMode ? LONG_FRAME_COUNT : SHORT_FRAME_COUNT
+  const activeTicketCost = isLongMode ? LONG_VIDEO_TICKET_COST : SHORT_VIDEO_TICKET_COST
   const canAdvanceImage = Boolean(sourcePayload)
   const canAdvancePrompt = prompt.trim().length > 0
 
@@ -410,8 +417,9 @@ export function Video() {
         height,
         noise_aug_strength: 0.1,
         fps: FIXED_FPS,
-        seconds: FIXED_SECONDS,
-        num_frames: FIXED_FRAME_COUNT,
+        seconds: activeSeconds,
+        num_frames: activeFrameCount,
+        long_mode: isLongMode,
         steps: FIXED_STEPS,
         cfg: FIXED_CFG,
         seed: 0,
@@ -452,7 +460,7 @@ export function Video() {
       if (!jobId) throw new Error('ジョブID取得に失敗しました。')
       return { jobId }
     },
-    [height, negativePrompt, prompt, width],
+    [activeFrameCount, activeSeconds, height, isLongMode, negativePrompt, prompt, width],
   )
 
   const pollJob = useCallback(async (jobId: string, runId: number, token?: string) => {
@@ -643,14 +651,14 @@ export function Video() {
     if (accessToken) {
       setStatusMessage('トークン確認中...')
       const latestCount = await fetchTickets(accessToken)
-      if (latestCount !== null && latestCount < VIDEO_TICKET_COST) {
+      if (latestCount !== null && latestCount < activeTicketCost) {
         setShowTicketModal(true)
         return
       }
     } else if (ticketCount === null) {
       setStatusMessage('トークン確認中...')
       return
-    } else if (ticketCount < VIDEO_TICKET_COST) {
+    } else if (ticketCount < activeTicketCost) {
       setShowTicketModal(true)
       return
     }
@@ -818,6 +826,23 @@ export function Video() {
                   <p>ネガティブプロンプト</p>
                   <strong>{negativePrompt || 'なし'}</strong>
                 </div>
+                <div className="mode-toggle-card">
+                  <div className="mode-toggle-card__header">
+                    <p className="mode-toggle-card__title">モード</p>
+                    <span className="mode-toggle-card__pill">{`${activeSeconds}秒 / ${activeTicketCost}トークン`}</span>
+                  </div>
+                  <label className="mode-toggle">
+                    <input
+                      className="mode-toggle__input"
+                      type="checkbox"
+                      checked={isLongMode}
+                      onChange={(event) => setIsLongMode(event.target.checked)}
+                    />
+                    <span className="mode-toggle__track" aria-hidden="true" />
+                    <span className="mode-toggle__text">ロングモード（10秒）</span>
+                  </label>
+                  <small className="mode-toggle-card__hint">通常は5秒で1トークン、10秒は2トークン消費します。</small>
+                </div>
               </div>
             )}
 
@@ -894,7 +919,7 @@ export function Video() {
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <div className="modal-card">
             <h3>トークン不足</h3>
-            <p>動画生成は1トークンです。購入ページへ移動しますか？</p>
+            <p>{`動画生成は${activeTicketCost}トークンです。購入ページへ移動しますか？`}</p>
             <div className="modal-actions">
               <button type="button" className="ghost-button" onClick={() => setShowTicketModal(false)}>
                 閉じる
